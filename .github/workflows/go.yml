@@ -1,0 +1,78 @@
+name: Go
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install jj (Jujutsu)
+        run: |
+          curl -L https://github.com/martinvonz/jj/releases/download/v0.25.0/jj-v0.25.0-x86_64-unknown-linux-musl.tar.gz | tar xz
+          sudo mv jj /usr/local/bin/
+          jj --version
+
+      - name: Install development tools
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint
+
+      - name: Run format check
+        run: just format
+
+      - name: Run linting
+        run: just lint
+
+      - name: Run tests
+        run: just test
+
+      - name: Run tests with coverage
+        run: just test-coverage
+
+  test-matrix:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ["1.22", "1.23"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install jj (Jujutsu)
+        run: |
+          if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
+            curl -L https://github.com/martinvonz/jj/releases/download/v0.25.0/jj-v0.25.0-x86_64-unknown-linux-musl.tar.gz | tar xz
+            sudo mv jj /usr/local/bin/
+          elif [ "${{ matrix.os }}" == "macos-latest" ]; then
+            curl -L https://github.com/martinvonz/jj/releases/download/v0.25.0/jj-v0.25.0-aarch64-apple-darwin.tar.gz | tar xz
+            sudo mv jj /usr/local/bin/
+          fi
+          jj --version
+
+      - name: Run tests
+        run: just test
