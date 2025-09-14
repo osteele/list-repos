@@ -1,0 +1,37 @@
+# golangci-lint configuration
+# Documentation: https://golangci-lint.run/usage/configuration/
+
+run:
+  # Timeout for analysis
+  timeout: 5m
+
+  # Include test files
+  tests: true
+
+linters:
+  enable:
+    # Default linters
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+    # Additional formatting linters
+    - gofumpt      # Stricter gofmt
+    - goimports    # Checks import ordering
+
+    # Additional quality linters
+    - misspell     # Finds commonly misspelled words
+    - unconvert    # Remove unnecessary type conversions
+    - unparam      # Reports unused function parameters
+    - prealloc     # Find slice declarations that could be pre-allocated
+
+linters-settings:
+  gofumpt:
+    # Use simplified format
+    extra-rules: true
+
+  goimports:
+    # Put local imports after 3rd party packages
+    local-prefixes: github.com/osteele/list-repos

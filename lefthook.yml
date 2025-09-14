@@ -1,0 +1,25 @@
+# lefthook.yml
+# Git hooks configuration for list-repos
+
+pre-commit:
+  parallel: false
+  commands:
+    fix:
+      run: just fix
+      tags: fix
+      stage_fixed: true
+    check:
+      run: just check
+      tags: check
+
+pre-push:
+  parallel: false
+  commands:
+    check:
+      run: just check
+      tags: check
+
+# Skip hooks in CI or when explicitly requested
+skip_output:
+  - meta
+  - execution
