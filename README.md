@@ -14,6 +14,14 @@ For each subdirectory, it shows:
 -   Whether the repository has a `remote`.
 -   Whether there are commits that haven't been pushed to the `origin` remote.
 
+## Features
+
+- **Parallel Processing**: Fast scanning using goroutines for concurrent repository checks
+- **Expression-Based Filtering**: Powerful filter expressions to show only the repositories you care about
+- **Flexible Sorting**: Sort by multiple fields in any order
+- **Smart Defaults**: Automatically detects repository root when run from within a repo
+- **Multi-VCS Support**: Works with both Git and Jujutsu repositories
+
 
 ## Installation
 
@@ -50,6 +58,73 @@ Or:
 list-repos /path/to/directory
 ```
 
+### Filtering
+
+Use the `--filter` or `-f` flag with expressions to show only specific repositories:
+
+```bash
+# Show only dirty repositories
+list-repos -f dirty
+
+# Show only Git repositories that are dirty
+list-repos -f "git & dirty"
+
+# Show repositories that are either dirty or have unpushed commits
+list-repos -f "dirty | ahead"
+
+# Show Git or Jujutsu repos without remotes
+list-repos -f "(git | jj) & !remote"
+
+# Show clean repositories with remotes
+list-repos -f "clean & remote"
+```
+
+#### Filter Terms
+- `dirty` - Has uncommitted changes
+- `clean` - No uncommitted changes (opposite of dirty)
+- `ahead` - Has commits not pushed to remote
+- `remote` - Has a configured remote
+- `local` - No configured remote (opposite of remote)
+- `git` - Git repository
+- `jj` or `jujutsu` - Jujutsu repository
+- `bare` - Not a repository
+
+#### Filter Operators
+- `&` or `and` - Both conditions must be true
+- `|` or `or` - Either condition can be true
+- `!` or `not` - Negates the condition
+- `()` - Groups conditions
+
+### Sorting
+
+Use the `--sort` or `-s` flag to control the output order:
+
+```bash
+# Sort by name (default)
+list-repos -s name
+
+# Sort by VCS type (Bare, Git, Jujutsu)
+list-repos -s vcs
+
+# Sort with dirty repositories first, then by name
+list-repos -s "dirty,name"
+
+# Reverse sort (clean repos first)
+list-repos -s "!dirty"
+
+# Complex sort: dirty first, then ahead, then by name
+list-repos -s "!dirty,!ahead,name"
+```
+
+#### Sort Fields
+- `name` - Repository name (alphabetical)
+- `vcs` or `type` - Version control system type
+- `dirty` - Dirty status
+- `ahead` - Ahead commits status
+- `remote` - Remote configuration status
+
+Use `!` prefix to reverse the sort order for a field.
+
 ### Output
 
 The output is a table with the following columns:
@@ -83,6 +158,22 @@ coffee-shop-finder             git        false   true    false
 todo-app-but-better            git        true    true    true
 my-awesome-blog                jujutsu    false   true    false
 cat-meme-generator             jujutsu    false   false   false
+```
+
+### Combined Examples
+
+```bash
+# Show only dirty Git repos, sorted by name
+list-repos -f "git & dirty" -s name
+
+# Show repos needing attention, with most urgent first
+list-repos -f "dirty | ahead" -s "!dirty,!ahead,name"
+
+# Find all local repos without remotes
+list-repos -f "!remote & (git | jj)"
+
+# Show Jujutsu repos that have unpushed changes
+list-repos -f "jj & (dirty | ahead)"
 ```
 
 ## Comparison with Similar Tools

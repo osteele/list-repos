@@ -21,9 +21,9 @@ Address critical issues with branch detection and ahead status:
   - Detect the actual tracked branch
   - Handle repos without upstream branches properly
 
-## Milestone: Expression-Based Filtering and Sorting
+## Milestone: Expression-Based Filtering and Sorting ✅
 
-Implement a unified expression language for filtering and sorting that scales from CLI to future TUI:
+✅ Implement a unified expression language for filtering and sorting that scales from CLI to future TUI:
 
 ### Filter Expression System
 - **Basic syntax:** `list-repos [--filter|-f EXPR] [--sort|-s EXPR]`

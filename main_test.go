@@ -497,3 +497,20 @@ func TestGetJujutsuStatus(t *testing.T) {
 		t.Error("expected repo with ahead commits to have ahead commits")
 	}
 }
+
+func TestParseJujutsuDirty(t *testing.T) {
+	cleanOutput := []byte("The working copy has no changes.\n")
+	if parseJujutsuDirty(cleanOutput) {
+		t.Fatal("expected clean output to be reported as not dirty")
+	}
+
+	dirtyOutput := []byte("Working copy changes:\nA file.txt\n")
+	if !parseJujutsuDirty(dirtyOutput) {
+		t.Fatal("expected file listing to be reported as dirty")
+	}
+
+	withBlankLine := []byte("Working copy changes:\n\n\nM foo\n")
+	if !parseJujutsuDirty(withBlankLine) {
+		t.Fatal("expected non-empty lines after blank lines to indicate dirty working copy")
+	}
+}

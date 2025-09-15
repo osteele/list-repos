@@ -1,13 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -86,6 +87,10 @@ func getDefaultDirectory() string {
 
 func main() {
 	noUnicode := flag.Bool("no-unicode", false, "Use text instead of Unicode symbols for boolean values")
+	filterExpr := flag.String("filter", "", "Filter expression (e.g., 'dirty', 'git & ahead', 'jj | bare')")
+	flag.StringVar(filterExpr, "f", "", "Filter expression (short form)")
+	sortExpr := flag.String("sort", "", "Sort expression (e.g., 'name', '!dirty,name', 'vcs,ahead')")
+	flag.StringVar(sortExpr, "s", "", "Sort expression (short form)")
 	flag.Parse()
 
 	// Determine which directory to scan
@@ -108,10 +113,30 @@ func main() {
 	// Process subdirectories in parallel
 	results := processSubdirectoriesParallel(subdirs)
 
-	// Sort results by path for consistent output
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Path < results[j].Path
-	})
+	// Apply filter if specified
+	if *filterExpr != "" {
+		filter, err := ParseFilter(*filterExpr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error parsing filter: %v\n", err)
+			os.Exit(1)
+		}
+
+		var filtered []*RepoStatus
+		for _, status := range results {
+			if filter.Match(status) {
+				filtered = append(filtered, status)
+			}
+		}
+		results = filtered
+	}
+
+	// Apply sort if specified, otherwise default sort by name
+	sortKeys, err := ParseSort(*sortExpr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error parsing sort expression: %v\n", err)
+		os.Exit(1)
+	}
+	SortResults(results, sortKeys)
 
 	fmt.Printf("% -30s % -10s % -7s % -7s % -7s\n", "Name", "VCS", "Dirty", "Remote", "Ahead")
 	for _, status := range results {
@@ -125,26 +150,43 @@ func main() {
 }
 
 func processSubdirectoriesParallel(subdirs []string) []*RepoStatus {
-	var wg sync.WaitGroup
-	resultChan := make(chan repoResult, len(subdirs))
-
-	// Launch a goroutine for each subdirectory
-	for _, subdir := range subdirs {
-		wg.Add(1)
-		go func(dir string) {
-			defer wg.Done()
-			status, err := getRepoStatus(dir)
-			resultChan <- repoResult{status: status, err: err}
-		}(subdir)
+	if len(subdirs) == 0 {
+		return nil
 	}
 
-	// Wait for all goroutines to complete and close the channel
+	workerCount := runtime.NumCPU()
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if len(subdirs) < workerCount {
+		workerCount = len(subdirs)
+	}
+
+	jobs := make(chan string, len(subdirs))
+	resultChan := make(chan repoResult, len(subdirs))
+
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer wg.Done()
+			for dir := range jobs {
+				status, err := getRepoStatus(dir)
+				resultChan <- repoResult{status: status, err: err}
+			}
+		}()
+	}
+
+	for _, subdir := range subdirs {
+		jobs <- subdir
+	}
+	close(jobs)
+
 	go func() {
 		wg.Wait()
 		close(resultChan)
 	}()
 
-	// Collect results
 	var results []*RepoStatus
 	for result := range resultChan {
 		if result.err == nil && result.status != nil {
@@ -217,41 +259,28 @@ func getGitStatus(status *RepoStatus) error {
 	}
 	status.Remote = len(output) > 0
 
-	// Check for ahead commits
-	cmd = exec.Command("git", "log", "origin/main..main")
+	// Check for ahead commits relative to the current upstream if configured
+	cmd = exec.Command("git", "rev-list", "--count", "@{u}..HEAD")
 	cmd.Dir = status.Path
-	output, err = cmd.Output()
+	output, err = cmd.CombinedOutput()
 	if err != nil {
-		// If origin/main doesn't exist, there are no unpushed commits
+		// No upstream configured or unable to compare; treat as not ahead
+		status.Ahead = false
 		return nil
 	}
-	status.Ahead = len(output) > 0
+	status.Ahead = strings.TrimSpace(string(output)) != "0"
 
 	return nil
 }
 
 func getJujutsuStatus(status *RepoStatus) error {
-	// Check if current revision has files and no description (dirty)
-	// First check if there are any modified files
 	cmd := exec.Command("jj", "status")
 	cmd.Dir = status.Path
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to get jujutsu status for %s: %w\n%s", status.Path, err, output)
 	}
-	hasFiles := len(output) > 0
-
-	// Check if current revision has a description
-	cmd = exec.Command("jj", "log", "-r", "@", "--no-graph", "-T", "description")
-	cmd.Dir = status.Path
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to get jujutsu description for %s: %w\n%s", status.Path, err, output)
-	}
-	hasNoDescription := len(bytes.TrimSpace(output)) == 0
-
-	// Dirty if has files and no description
-	status.Dirty = hasFiles && hasNoDescription
+	status.Dirty = parseJujutsuDirty(output)
 
 	// Check for a remote
 	cmd = exec.Command("jj", "git", "remote", "list")
@@ -281,4 +310,27 @@ func getJujutsuStatus(status *RepoStatus) error {
 	}
 
 	return nil
+}
+
+func parseJujutsuDirty(output []byte) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	inChangesSection := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(line, "The working copy has no changes") {
+			return false
+		}
+		if strings.HasPrefix(line, "Working copy changes:") {
+			inChangesSection = true
+			continue
+		}
+		if inChangesSection {
+			if trimmed == "" {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
