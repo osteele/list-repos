@@ -1,35 +1,25 @@
-# list-repos Wishlist
+# list-repos Ideas
 
 This document tracks potential features and improvements for the `list-repos` tool.
 
 See also: [Roadmap](../ROADMAP.md) for planned development milestones.
 
-## Current Limitations (High Priority)
 
-These are known limitations that should be addressed soon:
-
-- [ ] **Branch detection**: Currently hardcoded to `main` branch for ahead commit detection
-  - Need to detect the actual default branch (could be `master`, `main`, `develop`, etc.)
-  - Should check current branch tracking information
-- [ ] **Git ahead detection fails silently**: When `origin/main` doesn't exist, assumes no ahead commits
-  - Should detect the actual tracked branch
-  - Should handle repos without upstream branches properly
-- [ ] **No configuration support**: Cannot customize branch names or remote names
-  - Implement config file support for custom defaults
-- [ ] **Integration tests are placeholder only**: Need actual integration tests
-  - Test the CLI with real repository scenarios
-  - Test edge cases and error conditions
 
 ## Features
 
 ### Configuration
-- [ ] Support for `.list-repos.yml` or similar config file to customize:
+- [ ] Support for `~/.config/list-repos/config.yaml` to customize:
   - Default branch names (not just `main`) - *addresses current limitation*
   - Which directories to skip/ignore
   - Custom remote names (not just `origin`) - *addresses current limitation*
   - Output format preferences
+  - Default directories to scan
+  - Excluding certain directories from the scan
+  - Customizing the output format
 - [ ] Auto-detect default branch from git/jj configuration
 - [ ] Support for per-repository configuration overrides
+- [ ] Support for `.list-repos.yml` project-specific config file
 
 ### Repository Detection
 - [ ] Detect and report monorepos with nested repositories
@@ -46,18 +36,12 @@ These are known limitations that should be addressed soon:
 - [ ] Colored output with customizable themes
 - [ ] Compact mode (single line per repo)
 - [ ] Verbose mode with additional details
-- [ ] Sort options (by name, status, last modified, etc.)
 
 ### Performance
-- [x] Parallel repository scanning for faster execution ✅ (Completed)
 - [ ] Caching mechanism for large directory trees
-- [ ] Progress indicator for slow scans
 
 ### Filtering and Selection
-- [ ] Filter by repository type (`--only-git`, `--only-jj`)
-- [ ] Filter by status (`--only-dirty`, `--only-ahead`)
 - [ ] Regex/glob patterns for directory names
-- [ ] Interactive mode to select repos for batch operations
 
 ### Actions
 - [ ] `--fetch` flag to update all remotes before checking
@@ -68,7 +52,6 @@ These are known limitations that should be addressed soon:
 ## Technical Improvements
 
 ### Code Quality
-- [ ] Add comprehensive integration tests
 - [ ] Benchmark tests for performance optimization
 - [ ] Error recovery for individual repo failures
 - [ ] Better error messages with suggested fixes
