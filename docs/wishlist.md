@@ -2,6 +2,8 @@
 
 This document tracks potential features and improvements for the `list-repos` tool.
 
+See also: [Roadmap](../ROADMAP.md) for planned development milestones.
+
 ## Current Limitations (High Priority)
 
 These are known limitations that should be addressed soon:
@@ -47,7 +49,7 @@ These are known limitations that should be addressed soon:
 - [ ] Sort options (by name, status, last modified, etc.)
 
 ### Performance
-- [ ] Parallel repository scanning for faster execution
+- [x] Parallel repository scanning for faster execution ✅ (Completed)
 - [ ] Caching mechanism for large directory trees
 - [ ] Progress indicator for slow scans
 

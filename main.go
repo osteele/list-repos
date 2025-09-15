@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 )
 
 type RepoType int
@@ -37,6 +39,11 @@ type RepoStatus struct {
 	Dirty  bool
 	Remote bool
 	Ahead  bool
+}
+
+type repoResult struct {
+	status *RepoStatus
+	err    error
 }
 
 func formatBool(value, noUnicode bool) string {
@@ -98,20 +105,54 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Process subdirectories in parallel
+	results := processSubdirectoriesParallel(subdirs)
+
+	// Sort results by path for consistent output
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Path < results[j].Path
+	})
+
 	fmt.Printf("% -30s % -10s % -7s % -7s % -7s\n", "Name", "VCS", "Dirty", "Remote", "Ahead")
-	for _, subdir := range subdirs {
-		status, err := getRepoStatus(subdir)
-		if err != nil {
-			// Don't print errors for subdirectories that are not repositories
-			continue
-		}
+	for _, status := range results {
 		fmt.Printf("% -30s % -10s % -7s % -7s % -7s\n",
-			filepath.Base(subdir),
+			filepath.Base(status.Path),
 			status.Type,
 			formatBool(status.Dirty, *noUnicode),
 			formatBool(status.Remote, *noUnicode),
 			formatBool(status.Ahead, *noUnicode))
 	}
+}
+
+func processSubdirectoriesParallel(subdirs []string) []*RepoStatus {
+	var wg sync.WaitGroup
+	resultChan := make(chan repoResult, len(subdirs))
+
+	// Launch a goroutine for each subdirectory
+	for _, subdir := range subdirs {
+		wg.Add(1)
+		go func(dir string) {
+			defer wg.Done()
+			status, err := getRepoStatus(dir)
+			resultChan <- repoResult{status: status, err: err}
+		}(subdir)
+	}
+
+	// Wait for all goroutines to complete and close the channel
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	var results []*RepoStatus
+	for result := range resultChan {
+		if result.err == nil && result.status != nil {
+			results = append(results, result.status)
+		}
+	}
+
+	return results
 }
 
 func getSubdirectories(dir string) ([]string, error) {

@@ -2,10 +2,12 @@
 
 This file outlines the future development milestones for the `dir-status` CLI.
 
-## Milestone 0: Performance Optimization
+See also: [Wishlist](docs/wishlist.md) for additional feature ideas and improvements.
 
-- Collect directory status in parallel using goroutines
-- Implement concurrent execution for VCS command calls
+## Milestone 0: Performance Optimization ✅
+
+- ✅ Collect directory status in parallel using goroutines
+- ✅ Implement concurrent execution for VCS command calls
 - Add progress indicator for large directory scans
 
 ## Milestone 1: CLI Filtering and Sorting Options
