@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -188,10 +187,23 @@ func processSubdirectoriesParallel(subdirs []string) []*RepoStatus {
 	}()
 
 	var results []*RepoStatus
+	var errorCount int
 	for result := range resultChan {
-		if result.err == nil && result.status != nil {
+		if result.err != nil {
+			errorCount++
+			fmt.Fprintf(os.Stderr, "warning: failed to process repository: %v\n", result.err)
+		} else if result.status != nil {
 			results = append(results, result.status)
 		}
+	}
+
+	if errorCount > 0 {
+		fmt.Fprintf(os.Stderr, "warning: %d repositor%s could not be processed\n", errorCount, func() string {
+			if errorCount == 1 {
+				return "y"
+			}
+			return "ies"
+		}())
 	}
 
 	return results
@@ -274,13 +286,14 @@ func getGitStatus(status *RepoStatus) error {
 }
 
 func getJujutsuStatus(status *RepoStatus) error {
-	cmd := exec.Command("jj", "status")
+	// Check for working copy changes using diff --summary
+	cmd := exec.Command("jj", "diff", "--summary")
 	cmd.Dir = status.Path
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to get jujutsu status for %s: %w\n%s", status.Path, err, output)
+		return fmt.Errorf("failed to get jujutsu diff for %s: %w\n%s", status.Path, err, output)
 	}
-	status.Dirty = parseJujutsuDirty(output)
+	status.Dirty = len(bytes.TrimSpace(output)) > 0
 
 	// Check for a remote
 	cmd = exec.Command("jj", "git", "remote", "list")
@@ -310,27 +323,4 @@ func getJujutsuStatus(status *RepoStatus) error {
 	}
 
 	return nil
-}
-
-func parseJujutsuDirty(output []byte) bool {
-	scanner := bufio.NewScanner(bytes.NewReader(output))
-	inChangesSection := false
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(line, "The working copy has no changes") {
-			return false
-		}
-		if strings.HasPrefix(line, "Working copy changes:") {
-			inChangesSection = true
-			continue
-		}
-		if inChangesSection {
-			if trimmed == "" {
-				continue
-			}
-			return true
-		}
-	}
-	return false
 }
