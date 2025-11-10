@@ -235,6 +235,26 @@ func TestGetRepoStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Create a plain jujutsu directory (no git backend)
+	jjPlainDir := filepath.Join(tmpDir, "jj-plain")
+	_ = os.Mkdir(jjPlainDir, 0o755)
+	cmd = exec.Command("jj", "init")
+	cmd.Dir = jjPlainDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	// Configure jj user settings
+	cmd = exec.Command("jj", "config", "set", "--repo", "user.name", "Test User")
+	cmd.Dir = jjPlainDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("jj", "config", "set", "--repo", "user.email", "test@example.com")
+	cmd.Dir = jjPlainDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+
 	testCases := []struct {
 		dir      string
 		repoType RepoType
@@ -243,6 +263,7 @@ func TestGetRepoStatus(t *testing.T) {
 		{gitDir, Git},
 		{jjDir, Jujutsu},
 		{jjGitDir, Jujutsu},
+		{jjPlainDir, Jujutsu},
 	}
 
 	for _, tc := range testCases {
@@ -495,5 +516,56 @@ func TestGetJujutsuStatus(t *testing.T) {
 	}
 	if !status.Ahead {
 		t.Error("expected repo with ahead commits to have ahead commits")
+	}
+}
+
+func TestGetJujutsuStatusPlain(t *testing.T) {
+	// Test a plain jj repo (created with `jj init`, no git backend)
+	tmpDir, err := os.MkdirTemp("", "test-jj-plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	cmd := exec.Command("jj", "init")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	// Configure jj user settings
+	cmd = exec.Command("jj", "config", "set", "--repo", "user.name", "Test User")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("jj", "config", "set", "--repo", "user.email", "test@example.com")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	status := &RepoStatus{Path: tmpDir}
+	if err := getJujutsuStatus(status); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plain jj repo should work without errors
+	if status.Dirty {
+		t.Error("expected clean repo to be not dirty")
+	}
+	if status.Remote {
+		t.Error("expected repo without git backend to have no remote")
+	}
+	if status.Ahead {
+		t.Error("expected repo without remote to have no ahead commits")
+	}
+
+	// Test dirty state
+	_ = os.WriteFile(filepath.Join(tmpDir, "file"), []byte("test"), 0o644)
+	if err := getJujutsuStatus(status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Dirty {
+		t.Error("expected dirty repo to be dirty")
 	}
 }

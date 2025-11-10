@@ -296,13 +296,17 @@ func getJujutsuStatus(status *RepoStatus) error {
 	status.Dirty = len(bytes.TrimSpace(output)) > 0
 
 	// Check for a remote
+	// Note: This command fails for non-git-backed jj repos (created with `jj init`)
+	// We treat that as "no remote" rather than an error
 	cmd = exec.Command("jj", "git", "remote", "list")
 	cmd.Dir = status.Path
 	output, err = cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to get jujutsu remote for %s: %w\n%s", status.Path, err, output)
+		// If the command fails (e.g., no git backend), assume no remote
+		status.Remote = false
+	} else {
+		status.Remote = len(output) > 0
 	}
-	status.Remote = len(output) > 0
 
 	// Check for ahead commits (only if there's a remote)
 	if status.Remote {
