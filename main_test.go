@@ -487,7 +487,7 @@ func TestGetJujutsuStatus(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
-	cmd = exec.Command("jj", "git", "push", "--bookmark", "main", "--allow-new")
+	cmd = exec.Command("jj", "git", "push", "--all")
 	cmd.Dir = tmpDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
