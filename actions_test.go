@@ -106,6 +106,43 @@ func TestActionPush(t *testing.T) {
 	}
 }
 
+func TestActionPushNoRemote(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "action-push-noremote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	initGitRepo(t, tmpDir)
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActionCommit(tmpDir, "initial"); err != nil {
+		t.Fatal(err)
+	}
+
+	err = ActionPush(tmpDir)
+	if err == nil {
+		t.Fatal("expected push to fail with no remote")
+	}
+	if !strings.Contains(err.Error(), "no origin remote") {
+		t.Fatalf("expected no origin remote error, got: %v", err)
+	}
+}
+
+func TestActionCommitNothing(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "action-commit-nothing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	initGitRepo(t, tmpDir)
+
+	if err := ActionCommit(tmpDir, "empty commit"); err != nil {
+		t.Fatalf("commit with no changes should not error: %v", err)
+	}
+}
+
 func TestActionPull(t *testing.T) {
 	// Create a bare remote with a commit, clone it, add another commit to remote, then pull.
 	remoteDir, err := os.MkdirTemp("", "action-pull-remote")
@@ -251,7 +288,7 @@ func actionAddGitHubRemoteWithClient(path string, client *GitHubClient) error {
 	if err != nil {
 		return err
 	}
-	if hasRemote(path, "origin") {
+	if hasOrigin(path) {
 		cmd := exec.Command("git", "remote", "remove", "origin")
 		cmd.Dir = path
 		_ = cmd.Run()

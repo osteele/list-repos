@@ -22,6 +22,11 @@ func ActionPush(path string) error {
 		return nil
 	}
 
+	// Git: refuse to push if there is no remote at all.
+	if !hasOrigin(path) {
+		return fmt.Errorf("no origin remote configured")
+	}
+
 	// Git: try simple push first; if no upstream, set it up.
 	cmd := exec.Command("git", "push")
 	cmd.Dir = path
@@ -29,7 +34,7 @@ func ActionPush(path string) error {
 	if err == nil {
 		return nil
 	}
-	if strings.Contains(string(output), "no upstream branch") {
+	if strings.Contains(string(output), "no upstream branch") || strings.Contains(string(output), "current branch main has no upstream branch") {
 		cmd = exec.Command("git", "push", "-u", "origin", "HEAD")
 		cmd.Dir = path
 		output, err = cmd.CombinedOutput()
@@ -150,7 +155,7 @@ func ActionAddGitHubRemote(path string) error {
 	}
 
 	// Remove existing origin if present.
-	if hasRemote(path, "origin") {
+	if hasOrigin(path) {
 		cmd := exec.Command("git", "remote", "remove", "origin")
 		cmd.Dir = path
 		_ = cmd.Run()
@@ -184,7 +189,7 @@ func getOriginURL(path string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-func hasRemote(path, name string) bool {
+func hasOrigin(path string) bool {
 	cmd := exec.Command("git", "remote")
 	cmd.Dir = path
 	output, err := cmd.Output()
@@ -192,7 +197,7 @@ func hasRemote(path, name string) bool {
 		return false
 	}
 	for _, line := range strings.Split(string(output), "\n") {
-		if strings.TrimSpace(line) == name {
+		if strings.TrimSpace(line) == "origin" {
 			return true
 		}
 	}
@@ -266,6 +271,8 @@ func recoverFromRemote(path, url string) (bool, string) {
 	}
 
 	// Commit current working-tree files before switching branches so they are not lost.
+	_ = exec.Command("git", "config", "user.email", "gitsync@localhost").Run()
+	_ = exec.Command("git", "config", "user.name", "gitsync").Run()
 	_ = exec.Command("git", "add", "-A").Run()
 	_ = exec.Command("git", "commit", "-m", "Save local changes before repair").Run()
 
@@ -284,7 +291,9 @@ func attemptLocalRepair(path string) (bool, string) {
 	cmds := [][]string{
 		{"git", "fsck", "--full"},
 		{"git", "update-ref", "HEAD", "HEAD"},
-		{"git", "fetch", "--all"},
+	}
+	if hasOrigin(path) {
+		cmds = append(cmds, []string{"git", "fetch", "origin"})
 	}
 	for _, args := range cmds {
 		cmd := exec.Command(args[0], args[1:]...)

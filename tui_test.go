@@ -75,3 +75,10 @@ func TestTUIStatusMessage(t *testing.T) {
 		t.Fatal("expected status to be set")
 	}
 }
+
+func TestTUIInvalidDirectory(t *testing.T) {
+	err := runTUI("/nonexistent/path/for/gitsync")
+	if err == nil {
+		t.Fatal("expected error for invalid directory")
+	}
+}

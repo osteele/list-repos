@@ -183,6 +183,10 @@ func getRepoStatus(dir string) (*RepoStatus, error) {
 		status.Type = Git
 		err := getGitStatus(status)
 		if err != nil {
+			// Preserve corrupted repos so batch mode can surface them.
+			if status.Corrupted {
+				return status, nil
+			}
 			return nil, err
 		}
 	}

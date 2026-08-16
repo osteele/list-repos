@@ -65,11 +65,12 @@ func main() {
 	}
 	SortResults(results, sortKeys)
 
-	fmt.Printf("% -30s % -10s % -7s % -7s % -7s\n", "Name", "VCS", "Dirty", "Remote", "Ahead")
+	fmt.Printf("% -30s % -10s % -10s % -7s % -7s % -7s\n", "Name", "VCS", "Corrupted", "Dirty", "Remote", "Ahead")
 	for _, status := range results {
-		fmt.Printf("% -30s % -10s % -7s % -7s % -7s\n",
+		fmt.Printf("% -30s % -10s % -10s % -7s % -7s % -7s\n",
 			filepath.Base(status.Path),
 			status.Type,
+			formatBool(status.Corrupted, *noUnicode),
 			formatBool(status.Dirty, *noUnicode),
 			formatBool(status.Remote, *noUnicode),
 			formatBool(status.Ahead, *noUnicode))

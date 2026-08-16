@@ -171,33 +171,34 @@ The output is a table with the following columns:
 
 - **Name**: The name of the subdirectory.
 - **VCS**: The version control system: `git`, `jujutsu`, or `bare`.
+- **Corrupted**: `✓` if the Git repository appears damaged, `✗` otherwise.
 - **Dirty**: `✓` if there are uncommitted changes, `✗` otherwise.
 - **Remote**: `✓` if a remote is configured, `✗` otherwise.
-- **Ahead**: `✓` if there are local commits that haven't been pushed to the `origin` remote, `✗` otherwise.
+- **Ahead**: `✓` if there are local commits that haven't been pushed to the remote, `✗` otherwise.
 
 ### Example Output
 
 ```
 $ gitsync
-Name                           VCS        Dirty   Remote  Ahead
-coffee-shop-finder             git        ✗       ✓       ✗
-todo-app-but-better            git        ✓       ✓       ✓
-my-awesome-blog                jujutsu    ✗       ✓       ✗
-cat-meme-generator             jujutsu    ✗       ✗       ✗
-dotfiles                       git        ✓       ✓       ✗
-random-excuse-api              git        ✗       ✓       ✓
-old-experiments                bare       ✗       ✗       ✗
+Name                           VCS        Corrupted  Dirty   Remote  Ahead
+coffee-shop-finder             git        ✗          ✗       ✓       ✗
+todo-app-but-better            git        ✗          ✓       ✓       ✓
+my-awesome-blog                jujutsu    ✗          ✗       ✓       ✗
+cat-meme-generator             jujutsu    ✗          ✗       ✗       ✗
+dotfiles                       git        ✗          ✓       ✓       ✗
+random-excuse-api              git        ✗          ✗       ✓       ✓
+old-experiments                bare       ✗          ✗       ✗       ✗
 ```
 
 To use text instead of Unicode symbols, use the `--no-unicode` flag:
 
 ```
 $ gitsync --no-unicode
-Name                           VCS        Dirty   Remote  Ahead
-coffee-shop-finder             git        false   true    false
-todo-app-but-better            git        true    true    true
-my-awesome-blog                jujutsu    false   true    false
-cat-meme-generator             jujutsu    false   false   false
+Name                           VCS        Corrupted  Dirty   Remote  Ahead
+coffee-shop-finder             git        false      false   true    false
+todo-app-but-better            git        false      true    true    true
+my-awesome-blog                jujutsu    false      false   true    false
+cat-meme-generator             jujutsu    false      false   false   false
 ```
 
 ### Combined Examples

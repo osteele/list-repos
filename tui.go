@@ -94,6 +94,7 @@ type statusMsg struct {
 
 type actionDoneMsg struct {
 	message string
+	path    string
 }
 
 type clearMsg struct{}
@@ -182,6 +183,9 @@ var defaultKeyMap = keyMap{
 }
 
 func runTUI(scanDir string) error {
+	if _, err := os.Stat(scanDir); err != nil {
+		return fmt.Errorf("invalid scan directory: %w", err)
+	}
 	m := newModel(scanDir)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
@@ -285,11 +289,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case actionDoneMsg:
 		m.message = msg.message
-		idx := m.cursor
-		return m, tea.Batch(
-			refreshStatusCmd(idx, m.items[idx].path),
-			clearAfter(3*time.Second),
-		)
+		idx := -1
+		for i, item := range m.items {
+			if item.path == msg.path {
+				idx = i
+				break
+			}
+		}
+		var cmds []tea.Cmd
+		cmds = append(cmds, clearAfter(3*time.Second))
+		if idx >= 0 {
+			cmds = append(cmds, refreshStatusCmd(idx, m.items[idx].path))
+		}
+		return m, tea.Batch(cmds...)
 
 	case clearMsg:
 		m.message = ""
@@ -307,9 +319,9 @@ func (m model) runAction(name string, fn func(string) error) (model, tea.Cmd) {
 	m.message = fmt.Sprintf("%s: %s…", name, item.name())
 	return m, func() tea.Msg {
 		if err := fn(item.path); err != nil {
-			return actionDoneMsg{message: fmt.Sprintf("%s %s failed: %v", name, item.name(), err)}
+			return actionDoneMsg{path: item.path, message: fmt.Sprintf("%s %s failed: %v", name, item.name(), err)}
 		}
-		return actionDoneMsg{message: fmt.Sprintf("%s %s done", name, item.name())}
+		return actionDoneMsg{path: item.path, message: fmt.Sprintf("%s %s done", name, item.name())}
 	}
 }
 
@@ -322,12 +334,12 @@ func (m model) runRepair() (model, tea.Cmd) {
 	return m, func() tea.Msg {
 		ok, msg, err := ActionRepair(item.path)
 		if err != nil {
-			return actionDoneMsg{message: fmt.Sprintf("repair %s failed: %v", item.name(), err)}
+			return actionDoneMsg{path: item.path, message: fmt.Sprintf("repair %s failed: %v", item.name(), err)}
 		}
 		if !ok {
-			return actionDoneMsg{message: fmt.Sprintf("repair %s failed: %s", item.name(), msg)}
+			return actionDoneMsg{path: item.path, message: fmt.Sprintf("repair %s failed: %s", item.name(), msg)}
 		}
-		return actionDoneMsg{message: fmt.Sprintf("repair %s: %s", item.name(), msg)}
+		return actionDoneMsg{path: item.path, message: fmt.Sprintf("repair %s: %s", item.name(), msg)}
 	}
 }
 
@@ -344,8 +356,13 @@ func (m model) openEditor() (model, tea.Cmd) {
 			editor = "vi"
 		}
 	}
-	m.message = fmt.Sprintf("open %s in %s", item.name(), editor)
-	return m, tea.ExecProcess(exec.Command(editor, item.path), func(err error) tea.Msg {
+	parts := strings.Fields(editor)
+	if len(parts) == 0 {
+		parts = []string{"vi"}
+	}
+	args := append(parts[1:], item.path)
+	m.message = fmt.Sprintf("open %s in %s", item.name(), parts[0])
+	return m, tea.ExecProcess(exec.Command(parts[0], args...), func(err error) tea.Msg {
 		if err != nil {
 			return actionDoneMsg{message: fmt.Sprintf("open %s failed: %v", item.name(), err)}
 		}
