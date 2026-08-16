@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -32,39 +32,38 @@ func (rt RepoType) String() string {
 	}
 }
 
+// Count is a commit count (ahead/behind) that may be unknown when it could
+// not be determined — e.g. a repo with no upstream, or a failed query.
+type Count struct {
+	N     int
+	Known bool
+}
+
+// Positive reports whether the count is known to be greater than zero.
+func (c Count) Positive() bool {
+	return c.Known && c.N > 0
+}
+
 type RepoStatus struct {
 	Path      string
 	Type      RepoType
 	Dirty     bool
 	Remote    bool
-	Ahead     bool
-	Behind    bool
+	Ahead     Count
+	Behind    Count
 	Corrupted bool
 	Error     string
 }
 
 type repoResult struct {
+	path   string
 	status *RepoStatus
 	err    error
 }
 
-func formatBool(value, noUnicode bool) string {
-	if noUnicode {
-		if value {
-			return "true"
-		}
-		return "false"
-	}
-	if value {
-		return "✓"
-	}
-	return "✗"
-}
-
 func getDefaultDirectory() string {
 	// Try jj root first (since jj repos often have .git too)
-	cmd := exec.Command("jj", "root")
-	output, err := cmd.Output()
+	output, err := runVCSOutput(".", "jj", "root")
 	if err == nil {
 		root := strings.TrimSpace(string(output))
 		if root != "" {
@@ -73,8 +72,7 @@ func getDefaultDirectory() string {
 	}
 
 	// Try git root
-	cmd = exec.Command("git", "rev-parse", "--show-toplevel")
-	output, err = cmd.Output()
+	output, err = runVCSOutput(".", "git", "rev-parse", "--show-toplevel")
 	if err == nil {
 		root := strings.TrimSpace(string(output))
 		if root != "" {
@@ -109,7 +107,7 @@ func processSubdirectoriesParallel(subdirs []string) []*RepoStatus {
 			defer wg.Done()
 			for dir := range jobs {
 				status, err := getRepoStatus(dir)
-				resultChan <- repoResult{status: status, err: err}
+				resultChan <- repoResult{path: dir, status: status, err: err}
 			}
 		}()
 	}
@@ -129,7 +127,17 @@ func processSubdirectoriesParallel(subdirs []string) []*RepoStatus {
 	for result := range resultChan {
 		if result.err != nil {
 			errorCount++
-			fmt.Fprintf(os.Stderr, "warning: failed to process repository: %v\n", result.err)
+			// Errored repos still get a row: a repo that cannot be scanned
+			// is exactly the one the user needs to see. Corrupted stays
+			// whatever damage detection found; a plain error is not damage.
+			status := result.status
+			if status == nil {
+				status = &RepoStatus{Path: result.path, Type: Bare}
+			}
+			if status.Error == "" {
+				status.Error = result.err.Error()
+			}
+			results = append(results, status)
 		} else if result.status != nil {
 			results = append(results, result.status)
 		}
@@ -167,38 +175,39 @@ func getSubdirectories(dir string) ([]string, error) {
 	return subdirs, nil
 }
 
+// detectRepoType stats the directory once to classify it. jj is checked
+// first since jj repos often have a colocated .git too.
+func detectRepoType(dir string) RepoType {
+	if _, err := os.Stat(filepath.Join(dir, ".jj")); err == nil {
+		return Jujutsu
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		return Git
+	}
+	return Bare
+}
+
 func getRepoStatus(dir string) (*RepoStatus, error) {
 	status := &RepoStatus{
 		Path: dir,
-		Type: Bare,
+		Type: detectRepoType(dir),
 	}
-
-	if _, err := os.Stat(filepath.Join(dir, ".jj")); err == nil {
-		status.Type = Jujutsu
-		err := getJujutsuStatus(status)
-		if err != nil {
-			return nil, err
-		}
-	} else if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-		status.Type = Git
-		err := getGitStatus(status)
-		if err != nil {
-			// Preserve corrupted repos so batch mode can surface them.
-			if status.Corrupted {
-				return status, nil
-			}
-			return nil, err
-		}
+	if status.Type == Bare {
+		return status, nil
 	}
-
+	if err := backendFor(status.Type).Status(status); err != nil {
+		// Preserve corrupted repos so batch mode can surface them.
+		if status.Corrupted {
+			return status, nil
+		}
+		return nil, err
+	}
 	return status, nil
 }
 
 func getGitStatus(status *RepoStatus) error {
 	// Check for uncommitted changes
-	cmd := exec.Command("git", "status", "--porcelain")
-	cmd.Dir = status.Path
-	output, err := cmd.Output()
+	output, err := runVCSOutput(status.Path, "git", "status", "--porcelain")
 	if err != nil {
 		status.Error = fmt.Sprintf("failed to get git status: %v", err)
 		status.Corrupted = detectGitDamageQuick(status.Path)
@@ -207,43 +216,40 @@ func getGitStatus(status *RepoStatus) error {
 	status.Dirty = len(output) > 0
 
 	// Check for a remote
-	cmd = exec.Command("git", "remote")
-	cmd.Dir = status.Path
-	output, err = cmd.Output()
+	output, err = runVCSOutput(status.Path, "git", "remote")
 	if err != nil {
 		return fmt.Errorf("failed to get git remote for %s: %w", status.Path, err)
 	}
 	status.Remote = len(output) > 0
 
 	// Check for ahead commits relative to the current upstream if configured
-	cmd = exec.Command("git", "rev-list", "--count", "@{u}..HEAD")
-	cmd.Dir = status.Path
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		// No upstream configured or unable to compare; treat as not ahead
-		status.Ahead = false
-	} else {
-		status.Ahead = strings.TrimSpace(string(output)) != "0"
-	}
+	output, err = runVCS(status.Path, statusTimeout, "git", "rev-list", "--count", "@{u}..HEAD")
+	status.Ahead = parseCount(output, err)
 
 	// Check for behind commits relative to the current upstream if configured
-	cmd = exec.Command("git", "rev-list", "--count", "HEAD..@{u}")
-	cmd.Dir = status.Path
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		status.Behind = false
-	} else {
-		status.Behind = strings.TrimSpace(string(output)) != "0"
-	}
+	output, err = runVCS(status.Path, statusTimeout, "git", "rev-list", "--count", "HEAD..@{u}")
+	status.Behind = parseCount(output, err)
 
 	return nil
 }
 
+// parseCount converts `git rev-list --count` output into a Count. Any failure
+// (no upstream configured, unreadable repo) yields an unknown count rather
+// than a confident zero.
+func parseCount(output []byte, err error) Count {
+	if err != nil {
+		return Count{}
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return Count{}
+	}
+	return Count{N: n, Known: true}
+}
+
 func getJujutsuStatus(status *RepoStatus) error {
 	// Check for working copy changes using diff --summary
-	cmd := exec.Command("jj", "diff", "--summary")
-	cmd.Dir = status.Path
-	output, err := cmd.CombinedOutput()
+	output, err := runVCS(status.Path, statusTimeout, "jj", "diff", "--summary")
 	if err != nil {
 		return fmt.Errorf("failed to get jujutsu diff for %s: %w\n%s", status.Path, err, output)
 	}
@@ -252,9 +258,7 @@ func getJujutsuStatus(status *RepoStatus) error {
 	// Check for a remote
 	// Note: This command fails for non-git-backed jj repos (created with `jj init`)
 	// We treat that as "no remote" rather than an error
-	cmd = exec.Command("jj", "git", "remote", "list")
-	cmd.Dir = status.Path
-	output, err = cmd.CombinedOutput()
+	output, err = runVCS(status.Path, statusTimeout, "jj", "git", "remote", "list")
 	if err != nil {
 		// If the command fails (e.g., no git backend), assume no remote
 		status.Remote = false
@@ -266,20 +270,29 @@ func getJujutsuStatus(status *RepoStatus) error {
 	if status.Remote {
 		// Count non-empty revisions that are not in remote bookmarks (excluding root)
 		// We exclude empty revisions as they're typically just working copies
-		cmd = exec.Command("jj", "log", "-r", "all() & ~ remote_bookmarks() & ~ root() & ~ empty()", "--no-graph", "-T", "commit_id")
-		cmd.Dir = status.Path
-		output, err = cmd.CombinedOutput()
+		output, err = runVCS(status.Path, statusTimeout, "jj", "log", "-r", "all() & ~ remote_bookmarks() & ~ root() & ~ empty()", "--no-graph", "-T", "commit_id")
 		if err != nil {
-			// If the command fails, assume no unpushed commits
-			status.Ahead = false
+			// If the command fails, the unpushed count is unknown
+			status.Ahead = Count{}
 		} else {
-			// If there are any commit IDs in the output, we have ahead commits
-			status.Ahead = len(bytes.TrimSpace(output)) > 0
+			status.Ahead = Count{N: countLines(output), Known: true}
 		}
 	} else {
-		status.Ahead = false
+		// No remote to be ahead of: the count is undefined, not zero.
+		status.Ahead = Count{}
 	}
 
-	status.Behind = false
+	// jj does not track behind here yet; report it as unknown, not zero.
+	status.Behind = Count{}
 	return nil
+}
+
+func countLines(output []byte) int {
+	n := 0
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
 }

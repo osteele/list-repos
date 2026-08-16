@@ -10,14 +10,13 @@ See also: [Roadmap](../ROADMAP.md) for planned development milestones.
 
 ### Configuration
 - [ ] Support for `~/.config/gitsync/config.yaml` to customize:
-  - Default branch names (not just `main`) - *addresses current limitation*
   - Which directories to skip/ignore
-  - Custom remote names (not just `origin`) - *addresses current limitation*
+  - Custom remote names (not just `origin`)
+  - Default commit message used by the TUI
   - Output format preferences
   - Default directories to scan
   - Excluding certain directories from the scan
   - Customizing the output format
-- [ ] Auto-detect default branch from git/jj configuration
 - [ ] Support for per-repository configuration overrides
 - [ ] Support for `.gitsync.yml` project-specific config file
 
@@ -33,7 +32,7 @@ See also: [Roadmap](../ROADMAP.md) for planned development milestones.
 ### Output Formats
 - [ ] JSON output mode for scripting
 - [ ] CSV export option
-- [ ] Colored output with customizable themes
+- [ ] Customizable color themes
 - [ ] Compact mode (single line per repo)
 - [ ] Verbose mode with additional details
 
@@ -47,13 +46,11 @@ See also: [Roadmap](../ROADMAP.md) for planned development milestones.
 - [ ] `--fetch` flag to update all remotes before checking
 - [ ] `--pull` flag to pull all clean repos
 - [ ] `--push` flag to push all repos with ahead commits
-- [ ] Generate summary report with statistics
 
 ## Technical Improvements
 
 ### Code Quality
 - [ ] Benchmark tests for performance optimization
-- [ ] Error recovery for individual repo failures
 - [ ] Better error messages with suggested fixes
 
 ### Architecture
@@ -65,4 +62,3 @@ See also: [Roadmap](../ROADMAP.md) for planned development milestones.
 
 ## Documentation
 - [ ] Video tutorial/demo
-- [ ] Comparison with similar tools

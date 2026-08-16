@@ -4,17 +4,6 @@ This file outlines the future development milestones for the `gitsync` CLI.
 
 See also: [Ideas](docs/ideas.md) for additional feature ideas and improvements.
 
-## Milestone: Fix Branch Detection and Ahead Status
-
-Address critical issues with branch detection and ahead status:
-
-- **Branch detection**: Currently hardcoded to `main` branch for ahead commit detection
-  - Detect the actual default branch (could be `master`, `main`, `develop`, etc.)
-  - Check current branch tracking information
-- **Git ahead detection fails silently**: When `origin/main` doesn't exist, assumes no ahead commits
-  - Detect the actual tracked branch
-  - Handle repos without upstream branches properly
-
 ## Milestone: Integration Tests
 
 - Implement comprehensive integration tests
@@ -28,8 +17,7 @@ Address critical issues with branch detection and ahead status:
 - Show ancestor bookmark(s) for Jujutsu repositories
 - Display last commit date/age for each repository
 - Count of uncommitted files (not just dirty flag)
-- Count of unpushed commits (exact number)
-- Count of unpulled commits (remote ahead of local)
+- Count of unpulled commits for Jujutsu repositories (Git already reports `behind N`)
 
 ## Milestone: Worktrees and Workspaces
 

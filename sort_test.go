@@ -56,12 +56,12 @@ func TestParseSortErrors(t *testing.T) {
 }
 
 func TestSortResults(t *testing.T) {
-	// Create test data
+	// Create test data. beta's ahead count is unknown; it must sort as 0.
 	results := []*RepoStatus{
-		{Path: "/path/zebra", Type: Git, Dirty: true, Ahead: false, Remote: true},
-		{Path: "/path/alpha", Type: Jujutsu, Dirty: false, Ahead: true, Remote: false},
-		{Path: "/path/beta", Type: Bare, Dirty: false, Ahead: false, Remote: false},
-		{Path: "/path/gamma", Type: Git, Dirty: true, Ahead: true, Remote: true},
+		{Path: "/path/zebra", Type: Git, Dirty: true, Ahead: Count{N: 0, Known: true}, Remote: true},
+		{Path: "/path/alpha", Type: Jujutsu, Dirty: false, Ahead: Count{N: 1, Known: true}, Remote: false},
+		{Path: "/path/beta", Type: Bare, Dirty: false, Ahead: Count{}, Remote: false},
+		{Path: "/path/gamma", Type: Git, Dirty: true, Ahead: Count{N: 3, Known: true}, Remote: true},
 	}
 
 	testCases := []struct {
@@ -73,7 +73,7 @@ func TestSortResults(t *testing.T) {
 		{"vcs", []string{"beta", "zebra", "gamma", "alpha"}},              // Bare, Git, Git, Jujutsu
 		{"dirty", []string{"zebra", "gamma", "alpha", "beta"}},            // Dirty first
 		{"!dirty", []string{"alpha", "beta", "zebra", "gamma"}},           // Clean first
-		{"ahead", []string{"alpha", "gamma", "zebra", "beta"}},            // Ahead first
+		{"ahead", []string{"gamma", "alpha", "zebra", "beta"}},            // Higher counts first; unknown sorts as 0
 		{"dirty,name", []string{"gamma", "zebra", "alpha", "beta"}},       // Dirty first, then by name
 		{"vcs,name", []string{"beta", "gamma", "zebra", "alpha"}},         // By VCS (Bare, Git, Git, Jujutsu), then by name
 		{"dirty,ahead,name", []string{"gamma", "zebra", "alpha", "beta"}}, // Complex sort
@@ -106,8 +106,8 @@ func TestSortResults(t *testing.T) {
 
 func TestSortComparison(t *testing.T) {
 	// Test individual sort key comparisons
-	a := &RepoStatus{Path: "/path/a", Type: Git, Dirty: true, Ahead: true, Remote: true}
-	b := &RepoStatus{Path: "/path/b", Type: Jujutsu, Dirty: false, Ahead: false, Remote: false}
+	a := &RepoStatus{Path: "/path/a", Type: Git, Dirty: true, Ahead: Count{N: 2, Known: true}, Remote: true}
+	b := &RepoStatus{Path: "/path/b", Type: Jujutsu, Dirty: false, Ahead: Count{N: 0, Known: true}, Remote: false}
 
 	testCases := []struct {
 		key      SortKey

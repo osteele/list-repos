@@ -145,11 +145,11 @@ type aheadSortKey struct {
 }
 
 func (k *aheadSortKey) Compare(a, b *RepoStatus) int {
-	// Repos with ahead commits come first (when not reversed)
+	// Higher ahead counts come first; unknown counts sort as 0.
 	result := 0
-	if a.Ahead && !b.Ahead {
+	if countValue(a.Ahead) > countValue(b.Ahead) {
 		result = -1
-	} else if !a.Ahead && b.Ahead {
+	} else if countValue(a.Ahead) < countValue(b.Ahead) {
 		result = 1
 	}
 
@@ -157,6 +157,14 @@ func (k *aheadSortKey) Compare(a, b *RepoStatus) int {
 		result = -result
 	}
 	return result
+}
+
+// countValue maps a Count to its sort value; unknown counts sort as 0.
+func countValue(c Count) int {
+	if !c.Known {
+		return 0
+	}
+	return c.N
 }
 
 type remoteSortKey struct {
@@ -183,11 +191,11 @@ type behindSortKey struct {
 }
 
 func (k *behindSortKey) Compare(a, b *RepoStatus) int {
-	// Repos that are behind come first (when not reversed)
+	// Higher behind counts come first; unknown counts sort as 0.
 	result := 0
-	if a.Behind && !b.Behind {
+	if countValue(a.Behind) > countValue(b.Behind) {
 		result = -1
-	} else if !a.Behind && b.Behind {
+	} else if countValue(a.Behind) < countValue(b.Behind) {
 		result = 1
 	}
 

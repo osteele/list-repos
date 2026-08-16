@@ -7,26 +7,6 @@ import (
 	"testing"
 )
 
-func TestFormatBool(t *testing.T) {
-	testCases := []struct {
-		value     bool
-		noUnicode bool
-		expected  string
-	}{
-		{true, false, "✓"},
-		{false, false, "✗"},
-		{true, true, "true"},
-		{false, true, "false"},
-	}
-
-	for _, tc := range testCases {
-		result := formatBool(tc.value, tc.noUnicode)
-		if result != tc.expected {
-			t.Errorf("formatBool(%v, %v) = %q, expected %q", tc.value, tc.noUnicode, result, tc.expected)
-		}
-	}
-}
-
 func TestGetDefaultDirectory(t *testing.T) {
 	// Test in a git repository
 	gitDir, err := os.MkdirTemp("", "test-git")
@@ -301,8 +281,8 @@ func TestGetGitStatus(t *testing.T) {
 	if status.Remote {
 		t.Error("expected repo without remote to have no remote")
 	}
-	if status.Ahead {
-		t.Error("expected repo without remote to have no ahead commits")
+	if status.Ahead.Known {
+		t.Error("expected repo without upstream to have an unknown ahead count")
 	}
 
 	// dirty repo
@@ -362,8 +342,8 @@ func TestGetGitStatus(t *testing.T) {
 	if err := getGitStatus(status); err != nil {
 		t.Fatal(err)
 	}
-	if status.Ahead {
-		t.Error("expected repo with no ahead commits to have no ahead commits")
+	if !status.Ahead.Known || status.Ahead.N != 0 {
+		t.Errorf("expected up-to-date repo to have ahead count 0, got %+v", status.Ahead)
 	}
 
 	// add another commit
@@ -382,8 +362,28 @@ func TestGetGitStatus(t *testing.T) {
 	if err := getGitStatus(status); err != nil {
 		t.Fatal(err)
 	}
-	if !status.Ahead {
-		t.Error("expected repo with ahead commits to have ahead commits")
+	if !status.Ahead.Known || status.Ahead.N != 1 {
+		t.Errorf("expected ahead count 1, got %+v", status.Ahead)
+	}
+
+	// a second unpushed commit bumps the count
+	_ = os.WriteFile(filepath.Join(tmpDir, "file3"), []byte(""), 0o644)
+	cmd = exec.Command("git", "add", ".")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("git", "commit", "-m", "third commit")
+	cmd.Dir = tmpDir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Test User", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=Test User", "GIT_COMMITTER_EMAIL=test@example.com")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := getGitStatus(status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ahead.Known || status.Ahead.N != 2 {
+		t.Errorf("expected ahead count 2, got %+v", status.Ahead)
 	}
 }
 
@@ -434,8 +434,11 @@ func TestGetJujutsuStatus(t *testing.T) {
 	if status.Remote {
 		t.Error("expected repo without remote to have no remote")
 	}
-	if status.Ahead {
+	if status.Ahead.Positive() {
 		t.Error("expected repo without remote to have no ahead commits")
+	}
+	if status.Behind.Known {
+		t.Error("expected jujutsu behind count to be unknown")
 	}
 
 	// dirty repo - create a new revision without description
@@ -500,8 +503,8 @@ func TestGetJujutsuStatus(t *testing.T) {
 	debugCmd := exec.Command("jj", "log", "-r", "all() & ~ remote_bookmarks() & ~ root() & ~ empty()", "--no-graph", "-T", "commit_id")
 	debugCmd.Dir = tmpDir
 	debugOutput, _ := debugCmd.CombinedOutput()
-	if status.Ahead {
-		t.Errorf("expected repo with no ahead commits to have no ahead commits. Debug output: %q", string(debugOutput))
+	if status.Ahead.Known && status.Ahead.N != 0 {
+		t.Errorf("expected repo with no ahead commits to have ahead count 0. Debug output: %q", string(debugOutput))
 	}
 
 	// add another commit
@@ -514,8 +517,8 @@ func TestGetJujutsuStatus(t *testing.T) {
 	if err := getJujutsuStatus(status); err != nil {
 		t.Fatal(err)
 	}
-	if !status.Ahead {
-		t.Error("expected repo with ahead commits to have ahead commits")
+	if !status.Ahead.Known || status.Ahead.N != 1 {
+		t.Errorf("expected repo with one ahead commit to have ahead count 1, got %+v", status.Ahead)
 	}
 }
 
@@ -556,7 +559,7 @@ func TestGetJujutsuStatusPlain(t *testing.T) {
 	if status.Remote {
 		t.Error("expected repo without git backend to have no remote")
 	}
-	if status.Ahead {
+	if status.Ahead.Positive() {
 		t.Error("expected repo without remote to have no ahead commits")
 	}
 

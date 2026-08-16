@@ -75,10 +75,10 @@ func TestGetRepoStatusFreshGitRepo(t *testing.T) {
 	if status.Remote {
 		t.Fatal("fresh repo should not have remote")
 	}
-	if status.Ahead {
+	if status.Ahead.Positive() {
 		t.Fatal("fresh repo should not be ahead")
 	}
-	if status.Behind {
+	if status.Behind.Positive() {
 		t.Fatal("fresh repo should not be behind")
 	}
 }
@@ -109,5 +109,38 @@ func TestProcessSubdirectoriesParallelIncludesCorrupted(t *testing.T) {
 	}
 	if !results[0].Corrupted {
 		t.Fatalf("expected corrupted result, got %#v", results[0])
+	}
+}
+
+func TestProcessSubdirectoriesParallelIncludesErrored(t *testing.T) {
+	parentDir, err := os.MkdirTemp("", "parallel-errored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(parentDir) }()
+
+	// A garbage .jj directory makes the status check fail outright; the
+	// repo must still yield a row rather than being dropped.
+	repoDir := filepath.Join(parentDir, "errored")
+	if err := os.Mkdir(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jjDir := filepath.Join(repoDir, ".jj")
+	if err := os.Mkdir(jjDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jjDir, "garbage"), []byte("not a repo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results := processSubdirectoriesParallel([]string{repoDir})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for the errored repo, got %d", len(results))
+	}
+	if results[0].Error == "" {
+		t.Fatalf("expected error message on result, got %#v", results[0])
+	}
+	if results[0].Corrupted {
+		t.Fatal("a scan error is not corruption")
 	}
 }

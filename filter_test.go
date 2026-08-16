@@ -15,8 +15,12 @@ func TestParseFilter(t *testing.T) {
 		{"dirty", RepoStatus{Dirty: false}, false},
 		{"clean", RepoStatus{Dirty: false}, true},
 		{"clean", RepoStatus{Dirty: true}, false},
-		{"ahead", RepoStatus{Ahead: true}, true},
-		{"ahead", RepoStatus{Ahead: false}, false},
+		{"ahead", RepoStatus{Ahead: Count{N: 1, Known: true}}, true},
+		{"ahead", RepoStatus{Ahead: Count{N: 0, Known: true}}, false},
+		{"ahead", RepoStatus{Ahead: Count{N: 3, Known: false}}, false}, // unknown never matches
+		{"behind", RepoStatus{Behind: Count{N: 2, Known: true}}, true},
+		{"behind", RepoStatus{Behind: Count{N: 0, Known: true}}, false},
+		{"behind", RepoStatus{Behind: Count{N: 5, Known: false}}, false}, // unknown never matches
 		{"remote", RepoStatus{Remote: true}, true},
 		{"remote", RepoStatus{Remote: false}, false},
 		{"local", RepoStatus{Remote: false}, true},
@@ -29,22 +33,22 @@ func TestParseFilter(t *testing.T) {
 		{"bare", RepoStatus{Type: Git}, false},
 
 		// AND operations
-		{"dirty and ahead", RepoStatus{Dirty: true, Ahead: true}, true},
-		{"dirty and ahead", RepoStatus{Dirty: true, Ahead: false}, false},
-		{"dirty & ahead", RepoStatus{Dirty: true, Ahead: true}, true},
+		{"dirty and ahead", RepoStatus{Dirty: true, Ahead: Count{N: 1, Known: true}}, true},
+		{"dirty and ahead", RepoStatus{Dirty: true, Ahead: Count{N: 0, Known: true}}, false},
+		{"dirty & ahead", RepoStatus{Dirty: true, Ahead: Count{N: 1, Known: true}}, true},
 		{"git & dirty", RepoStatus{Type: Git, Dirty: true}, true},
 		{"git & dirty", RepoStatus{Type: Git, Dirty: false}, false},
 		{"git & dirty", RepoStatus{Type: Jujutsu, Dirty: true}, false},
 
 		// Implicit AND (adjacent terms)
-		{"dirty ahead", RepoStatus{Dirty: true, Ahead: true}, true},
-		{"dirty ahead", RepoStatus{Dirty: false, Ahead: true}, false},
+		{"dirty ahead", RepoStatus{Dirty: true, Ahead: Count{N: 1, Known: true}}, true},
+		{"dirty ahead", RepoStatus{Dirty: false, Ahead: Count{N: 1, Known: true}}, false},
 
 		// OR operations
-		{"dirty or ahead", RepoStatus{Dirty: true, Ahead: false}, true},
-		{"dirty or ahead", RepoStatus{Dirty: false, Ahead: true}, true},
-		{"dirty or ahead", RepoStatus{Dirty: false, Ahead: false}, false},
-		{"dirty | ahead", RepoStatus{Dirty: true, Ahead: false}, true},
+		{"dirty or ahead", RepoStatus{Dirty: true, Ahead: Count{N: 0, Known: true}}, true},
+		{"dirty or ahead", RepoStatus{Dirty: false, Ahead: Count{N: 1, Known: true}}, true},
+		{"dirty or ahead", RepoStatus{Dirty: false, Ahead: Count{N: 0, Known: true}}, false},
+		{"dirty | ahead", RepoStatus{Dirty: true, Ahead: Count{N: 0, Known: true}}, true},
 		{"git | jj", RepoStatus{Type: Git}, true},
 		{"git | jj", RepoStatus{Type: Jujutsu}, true},
 		{"git | jj", RepoStatus{Type: Bare}, false},
@@ -65,11 +69,11 @@ func TestParseFilter(t *testing.T) {
 		{"!(git | jj)", RepoStatus{Type: Git}, false},
 
 		// Mixed complexity
-		{"dirty & (git | jj) & ahead", RepoStatus{Type: Git, Dirty: true, Ahead: true}, true},
-		{"dirty & (git | jj) & ahead", RepoStatus{Type: Git, Dirty: true, Ahead: false}, false},
+		{"dirty & (git | jj) & ahead", RepoStatus{Type: Git, Dirty: true, Ahead: Count{N: 1, Known: true}}, true},
+		{"dirty & (git | jj) & ahead", RepoStatus{Type: Git, Dirty: true, Ahead: Count{N: 0, Known: true}}, false},
 		{"(dirty & ahead) | bare", RepoStatus{Type: Bare}, true},
-		{"(dirty & ahead) | bare", RepoStatus{Dirty: true, Ahead: true}, true},
-		{"(dirty & ahead) | bare", RepoStatus{Dirty: true, Ahead: false, Type: Git}, false},
+		{"(dirty & ahead) | bare", RepoStatus{Dirty: true, Ahead: Count{N: 1, Known: true}}, true},
+		{"(dirty & ahead) | bare", RepoStatus{Dirty: true, Ahead: Count{N: 0, Known: true}, Type: Git}, false},
 
 		// Empty filter (matches all)
 		{"", RepoStatus{}, true},
@@ -124,8 +128,8 @@ func TestFilterCaseInsensitive(t *testing.T) {
 		{"Dirty", RepoStatus{Dirty: true}, true},
 		{"GIT", RepoStatus{Type: Git}, true},
 		{"JJ", RepoStatus{Type: Jujutsu}, true},
-		{"DIRTY AND AHEAD", RepoStatus{Dirty: true, Ahead: true}, true},
-		{"dirty OR ahead", RepoStatus{Dirty: false, Ahead: true}, true},
+		{"DIRTY AND AHEAD", RepoStatus{Dirty: true, Ahead: Count{N: 1, Known: true}}, true},
+		{"dirty OR ahead", RepoStatus{Dirty: false, Ahead: Count{N: 1, Known: true}}, true},
 		{"NOT dirty", RepoStatus{Dirty: false}, true},
 	}
 

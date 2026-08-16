@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -59,6 +58,12 @@ func TestActionCommit(t *testing.T) {
 }
 
 func TestActionPush(t *testing.T) {
+	// Isolate from global git config: a global push.autoSetupRemote=true
+	// makes even a plain push configure the upstream, which would mask the
+	// explicit upstream setup under test. (A repo-local autoSetupRemote=false
+	// does not reliably override the global setting.)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+
 	// Create a bare remote and a local repo with a commit to push.
 	remoteDir, err := os.MkdirTemp("", "action-push-remote")
 	if err != nil {
@@ -93,6 +98,17 @@ func TestActionPush(t *testing.T) {
 
 	if err := ActionPush(localDir); err != nil {
 		t.Fatalf("push failed: %v", err)
+	}
+
+	// The branch had no upstream before the push; pushing must have set one.
+	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	cmd.Dir = localDir
+	upstream, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("expected upstream to be configured after push: %v", err)
+	}
+	if !strings.HasPrefix(string(upstream), "origin/") {
+		t.Fatalf("expected upstream on origin, got %q", upstream)
 	}
 
 	cmd = exec.Command("git", "log", "--pretty=%s")
@@ -237,6 +253,114 @@ func TestActionRepairLocal(t *testing.T) {
 	}
 }
 
+// setupRecoverableRepo builds a local repo whose origin has a main branch,
+// with an uncommitted edit to a tracked file. The edit makes the repair's
+// branch checkout fail unless the local changes are committed first.
+func setupRecoverableRepo(t *testing.T) (remoteDir, localDir string) {
+	t.Helper()
+	remoteDir, err := os.MkdirTemp("", "recover-remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(remoteDir) })
+	cmd := exec.Command("git", "init", "--bare")
+	cmd.Dir = remoteDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	localDir, err = os.MkdirTemp("", "recover-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(localDir) })
+	initGitRepo(t, localDir)
+	if err := os.WriteFile(filepath.Join(localDir, "file.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActionCommit(localDir, "initial"); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("git", "branch", "-M", "main")
+	cmd.Dir = localDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("git", "remote", "add", "origin", remoteDir)
+	cmd.Dir = localDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("git", "push", "-u", "origin", "main")
+	cmd.Dir = localDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "file.txt"), []byte("local edits"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return remoteDir, localDir
+}
+
+// chdirScratch runs the test from a scratch directory so that commands which
+// (incorrectly) use the process CWD cannot touch the real repository.
+func chdirScratch(t *testing.T) {
+	t.Helper()
+	scratch, err := os.MkdirTemp("", "recover-cwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(scratch); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWd)
+		_ = os.RemoveAll(scratch)
+	})
+}
+
+func TestRecoverFromRemotePreservesLocalEdits(t *testing.T) {
+	remoteDir, localDir := setupRecoverableRepo(t)
+	chdirScratch(t)
+
+	ok, msg := recoverFromRemote(localDir, remoteDir)
+	if !ok {
+		t.Fatalf("recover failed: %s", msg)
+	}
+
+	// The local edits must survive the repair as a safety commit in the repo.
+	cmd := exec.Command("git", "reflog")
+	cmd.Dir = localDir
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "Save local changes before repair") {
+		t.Fatalf("safety commit missing from repaired repo reflog: %q", output)
+	}
+}
+
+func TestRecoverFromRemoteKeepsBackup(t *testing.T) {
+	remoteDir, localDir := setupRecoverableRepo(t)
+	chdirScratch(t)
+
+	ok, msg := recoverFromRemote(localDir, remoteDir)
+	if !ok {
+		t.Fatalf("recover failed: %s", msg)
+	}
+	backupDir := filepath.Join(localDir, ".git.broken")
+	if _, err := os.Stat(backupDir); err != nil {
+		t.Fatalf("expected backup %s to survive repair: %v", backupDir, err)
+	}
+	if !strings.Contains(msg, backupDir) {
+		t.Fatalf("expected success message to mention backup location, got %q", msg)
+	}
+}
+
 func TestActionAddGitHubRemote(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "action-ghremote")
 	if err != nil {
@@ -276,31 +400,6 @@ func TestActionAddGitHubRemote(t *testing.T) {
 	if string(output) != expected {
 		t.Fatalf("expected %q, got %q", expected, output)
 	}
-}
-
-func actionAddGitHubRemoteWithClient(path string, client *GitHubClient) error {
-	username, err := client.GetUsername()
-	if err != nil {
-		return err
-	}
-	repoName := filepath.Base(path)
-	cloneURL, err := client.FindRepo(repoName, username)
-	if err != nil {
-		return err
-	}
-	if hasOrigin(path) {
-		cmd := exec.Command("git", "remote", "remove", "origin")
-		cmd.Dir = path
-		_ = cmd.Run()
-	}
-	cmd := exec.Command("git", "remote", "add", "origin", cloneURL)
-	cmd.Dir = path
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to add origin: %w\n%s", err, output)
-	}
-	_ = setupTracking(path, "origin")
-	return nil
 }
 
 func contains(s, substr string) bool {

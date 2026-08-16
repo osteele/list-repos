@@ -80,7 +80,7 @@ func (f *cleanFilter) Match(status *RepoStatus) bool {
 type aheadFilter struct{}
 
 func (f *aheadFilter) Match(status *RepoStatus) bool {
-	return status.Ahead
+	return status.Ahead.Positive()
 }
 
 type remoteFilter struct{}
@@ -98,7 +98,7 @@ func (f *localFilter) Match(status *RepoStatus) bool {
 type behindFilter struct{}
 
 func (f *behindFilter) Match(status *RepoStatus) bool {
-	return status.Behind
+	return status.Behind.Positive()
 }
 
 type corruptedFilter struct{}

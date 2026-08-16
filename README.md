@@ -124,8 +124,8 @@ gitsync -s "!dirty,!ahead,name"
 - `name` - Repository name (alphabetical)
 - `vcs` or `type` - Version control system type
 - `dirty` - Dirty status
-- `ahead` - Ahead commits status
-- `behind` - Behind commits status
+- `ahead` - Unpushed commit count (higher counts first; unknown sorts as 0)
+- `behind` - Behind-upstream commit count (higher counts first; unknown sorts as 0)
 - `remote` - Remote configuration status
 
 Use `!` prefix to reverse the sort order for a field.
@@ -144,16 +144,26 @@ In the TUI you can navigate the directory tree with `↑`/`↓` (or `k`/`j`) and
 | Key | Action |
 |-----|--------|
 | `p` | Push |
-| `u` | Pull / fetch |
-| `c` | Commit all changes with the default message |
+| `u` | Pull (Git) / fetch (Jujutsu) |
+| `c` | Commit all changes; opens a prompt for the message |
 | `s` | Sync (pull then push) |
-| `r` | Repair a corrupted Git repository |
-| `a` | Add or replace `origin` with the matching GitHub remote |
+| `r` | Repair a corrupted Git repository (asks to confirm) |
+| `a` | Add `origin` from the matching GitHub remote (asks to confirm if replacing one) |
 | `o` | Open the repository in `$EDITOR` |
 | `f` | Reveal the repository in the system file manager |
+| `enter` | Show details for the selected repository, including the full output of its last action |
+| `?` | Toggle the full key list |
 | `q` / `ctrl+c` | Quit |
 
-The status icon next to each directory updates in the background. A message area at the bottom shows the result of each action.
+Notes:
+
+- **Confirmations.** `r` and `a` are destructive — `r` moves `.git` aside and `a` can replace an existing `origin` — so they prompt for `y`/`n` first. `esc` also cancels.
+- **Commit messages.** `c` opens a one-line input pre-filled with the default message. `enter` commits, `esc` cancels.
+- **One action at a time per repository.** While an action runs, its row shows `⏳` and further keys for that repository are ignored; other repositories remain available.
+- **Failures persist.** Successful results clear after a few seconds; failures stay until the next keypress, and the full command output is available via `enter`.
+- **Badges.** A row can carry several: `📝` dirty, `⬆` ahead, `⬇` behind, `✅` clean, `❌` corrupted, `⚠️` scan error, `📁` not a repository.
+
+The list scrolls when there are more repositories than fit on screen, and the status of each updates in the background.
 
 #### GitHub remote setup
 
@@ -167,39 +177,69 @@ The token needs only `repo` or `public_repo` scope for private or public reposit
 
 ### Output
 
-The output is a table with the following columns:
+The output is a table with three columns:
 
 - **Name**: The name of the subdirectory.
 - **VCS**: The version control system: `git`, `jujutsu`, or `bare`.
-- **Corrupted**: `✓` if the Git repository appears damaged, `✗` otherwise.
-- **Dirty**: `✓` if there are uncommitted changes, `✗` otherwise.
-- **Remote**: `✓` if a remote is configured, `✗` otherwise.
-- **Ahead**: `✓` if there are local commits that haven't been pushed to the remote, `✗` otherwise.
+- **Status**: Only the noteworthy states, so a healthy repository stays quiet. Possible tokens:
+
+| Token | Meaning |
+|-------|---------|
+| `error: …` | The repository could not be scanned |
+| `corrupted` | The Git repository appears damaged |
+| `dirty` | There are uncommitted changes |
+| `ahead N` | `N` local commits have not been pushed |
+| `behind N` | The remote has `N` commits not present locally |
+| `ahead ?` | A remote exists but the count could not be determined (e.g. no upstream configured) |
+| `no remote` | No remote is configured |
+| `clean` | None of the above |
+
+`error` and `corrupted` suppress the other tokens, since the rest of the status could not be determined reliably. When the output is a terminal, tokens are colored by severity; set `NO_COLOR` to disable.
+
+A summary line follows the table.
 
 ### Example Output
 
 ```
 $ gitsync
-Name                           VCS        Corrupted  Dirty   Remote  Ahead
-coffee-shop-finder             git        ✗          ✗       ✓       ✗
-todo-app-but-better            git        ✗          ✓       ✓       ✓
-my-awesome-blog                jujutsu    ✗          ✗       ✓       ✗
-cat-meme-generator             jujutsu    ✗          ✗       ✗       ✗
-dotfiles                       git        ✗          ✓       ✓       ✗
-random-excuse-api              git        ✗          ✗       ✓       ✓
-old-experiments                bare       ✗          ✗       ✗       ✗
+Name                 VCS      Status
+coffee-shop-finder   git      clean
+todo-app-but-better  git      dirty ahead 3
+my-awesome-blog      jujutsu  clean
+cat-meme-generator   jujutsu  no remote
+dotfiles             git      dirty
+random-excuse-api    git      ahead 1
+broken-checkout      git      corrupted
+
+6 repos (+1 non-repo hidden): 2 dirty, 2 ahead, 1 no remote, 1 corrupted
 ```
 
-To use text instead of Unicode symbols, use the `--no-unicode` flag:
+Non-repository directories are hidden by default. Use `--all` to include them:
 
 ```
-$ gitsync --no-unicode
-Name                           VCS        Corrupted  Dirty   Remote  Ahead
-coffee-shop-finder             git        false      false   true    false
-todo-app-but-better            git        false      true    true    true
-my-awesome-blog                jujutsu    false      false   true    false
-cat-meme-generator             jujutsu    false      false   false   false
+$ gitsync --all
+Name             VCS   Status
+old-experiments  bare
+...
 ```
+
+### Scripting
+
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success; with `--filter`, nothing matched |
+| `1` | With `--filter`, at least one repository matched |
+| `2` | Usage error (bad filter or sort expression) |
+
+So a filter doubles as a check — the `&&` branch runs only when nothing needs attention:
+
+```bash
+gitsync -f "dirty | ahead" && echo "everything is in sync"
+```
+
+Color is disabled automatically when the output is not a terminal, so piping to a file or another program yields plain text.
 
 ### Combined Examples
 
