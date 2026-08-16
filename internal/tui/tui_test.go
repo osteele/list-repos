@@ -86,7 +86,7 @@ func TestTUIStatusMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, _ := m.Update(statusMsg{index: 0, status: &vcs.RepoStatus{Path: tmpDir, Type: vcs.Bare}})
+	updated, _ := m.Update(statusMsg{path: m.items[0].path, status: &vcs.RepoStatus{Path: tmpDir, Type: vcs.Dir}})
 	um := updated.(model)
 	if um.items[0].status == nil {
 		t.Fatal("expected status to be set")
@@ -358,7 +358,7 @@ func TestLoadStatusErrorIsNotCorrupted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	msg := loadStatusCmd(0, tmpDir)()
+	msg := loadStatusCmd(tmpDir)()
 	sm, ok := msg.(statusMsg)
 	if !ok {
 		t.Fatalf("expected statusMsg, got %T", msg)

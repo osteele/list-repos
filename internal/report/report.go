@@ -24,6 +24,7 @@ const (
 	stateBehind
 	stateAheadUnknown
 	stateNoRemote
+	stateNested
 	stateClean
 )
 
@@ -35,8 +36,9 @@ type StateToken struct {
 
 // StatusTokens reports the noteworthy states of a repo, most urgent first.
 // Scan errors and corruption crowd out everything else, since the rest of
-// the status could not be reliably determined. Bare directories have no
-// status at all. Shared by the batch table and the TUI so the two agree.
+// the status could not be reliably determined. A non-repository directory
+// has no status beyond a count of the repositories it directly contains.
+// Shared by the batch table and the TUI so the two agree.
 func StatusTokens(s *vcs.RepoStatus) []StateToken {
 	var tokens []StateToken
 	if s.Error != "" {
@@ -45,7 +47,13 @@ func StatusTokens(s *vcs.RepoStatus) []StateToken {
 	if s.Corrupted {
 		tokens = append(tokens, StateToken{StateCorrupted, "corrupted"})
 	}
-	if len(tokens) > 0 || s.Type == vcs.Bare {
+	if len(tokens) > 0 {
+		return tokens
+	}
+	if s.Type == vcs.Dir {
+		if s.NestedRepos > 0 {
+			tokens = append(tokens, StateToken{stateNested, fmt.Sprintf("%d %s", s.NestedRepos, plural(s.NestedRepos, "repo"))})
+		}
 		return tokens
 	}
 	if s.Dirty {
@@ -95,7 +103,7 @@ func (k StateKind) ansiColor() string {
 		return "\033[33m"
 	case stateAhead, stateBehind, stateAheadUnknown:
 		return "\033[36m"
-	case stateNoRemote:
+	case stateNoRemote, stateNested:
 		return "\033[2m"
 	case stateClean:
 		return "\033[32m"
@@ -128,10 +136,46 @@ func UseColor(w *os.File) bool {
 }
 
 // PrepareDisplay splits results into the rows to print and the count of
-// hidden bare directories. Bare directories print only with --all.
+// hidden non-repository directories. Non-repository directories print only
+// with --all, except that one whose descendants print, or that the caller
+// marked ContextOnly (e.g. because it contains repositories), is kept as
+// context — it is the only way to see where its children live — and is not
+// tallied by the summary.
 func PrepareDisplay(results []*vcs.RepoStatus, showAll bool) (visible []*vcs.RepoStatus, hiddenBare int) {
-	for _, s := range results {
-		if s.Type == vcs.Bare && !showAll {
+	// Rows are ordered so that descendants immediately follow their
+	// ancestors, so a right-to-left pass can tell whether a directory
+	// locates any kept descendant: keptBelow[d] records that a kept row at
+	// depth d has been seen within the current subtree.
+	var keptBelow []bool
+	keep := make([]bool, len(results))
+	for i := len(results) - 1; i >= 0; i-- {
+		s := results[i]
+		depth := s.Depth
+		if depth < 1 {
+			depth = 1
+		}
+		keptDescendant := false
+		for d := depth + 1; d < len(keptBelow); d++ {
+			if keptBelow[d] {
+				keptDescendant = true
+				break
+			}
+		}
+		keep[i] = s.Type != vcs.Dir || showAll || s.ContextOnly || keptDescendant
+		s.ContextOnly = keep[i] && s.Type == vcs.Dir && !showAll
+		for d := depth; d < len(keptBelow); d++ {
+			keptBelow[d] = false
+		}
+		for len(keptBelow) <= depth {
+			keptBelow = append(keptBelow, false)
+		}
+		if keep[i] {
+			keptBelow[depth] = true
+		}
+	}
+
+	for i, s := range results {
+		if !keep[i] {
 			hiddenBare++
 			continue
 		}
@@ -148,7 +192,12 @@ func summaryLine(visible []*vcs.RepoStatus, hiddenBare int) string {
 	nonRepos := 0
 	counts := map[StateKind]int{}
 	for _, s := range visible {
-		if s.Type == vcs.Bare {
+		// A context-only row is shown to locate its children; it is not
+		// itself part of the report.
+		if s.ContextOnly {
+			continue
+		}
+		if s.Type == vcs.Dir {
 			nonRepos++
 			continue
 		}
@@ -203,7 +252,12 @@ func PrintReport(w io.Writer, visible []*vcs.RepoStatus, hiddenBare int, color b
 		tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "Name\tVCS\tStatus")
 		for _, s := range visible {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", filepath.Base(s.Path), s.Type, statusText(s, color))
+			// Children indent one level under their parent directory.
+			name := filepath.Base(s.Path)
+			if s.Depth > 1 {
+				name = strings.Repeat("  ", s.Depth-1) + name
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", name, s.Type, statusText(s, color))
 		}
 		_ = tw.Flush()
 		_, _ = fmt.Fprintln(w)

@@ -21,6 +21,8 @@ type options struct {
 	sort        string
 	interactive bool
 	showAll     bool
+	recursive   bool
+	depth       int
 	scanDir     string
 }
 
@@ -34,13 +36,16 @@ func parseArgs(argv []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("gitsync", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Bool("no-unicode", false, "Use text instead of Unicode symbols (deprecated; output is now plain text)")
-	fs.StringVar(&opts.filter, "filter", "", "Filter expression (e.g., 'dirty', 'git & ahead', 'jj | bare')")
+	fs.StringVar(&opts.filter, "filter", "", "Filter expression (e.g., 'dirty', 'git & ahead', 'jj | dir')")
 	fs.StringVar(&opts.filter, "f", "", "Filter expression (short form)")
 	fs.StringVar(&opts.sort, "sort", "", "Sort expression (e.g., 'name', '!dirty,name', 'vcs,ahead')")
 	fs.StringVar(&opts.sort, "s", "", "Sort expression (short form)")
 	fs.BoolVar(&opts.interactive, "interactive", false, "Launch interactive TUI")
 	fs.BoolVar(&opts.interactive, "i", false, "Launch interactive TUI (short form)")
-	fs.BoolVar(&opts.showAll, "all", false, "Include non-repository (bare) directories in the table")
+	fs.BoolVar(&opts.showAll, "all", false, "Include non-repository (dir) directories in the table")
+	fs.BoolVar(&opts.recursive, "recursive", false, "Descend into non-repository directories to find nested repositories")
+	fs.BoolVar(&opts.recursive, "r", false, "Descend into non-repository directories (short form)")
+	fs.IntVar(&opts.depth, "depth", 4, "Cap recursive descent at this many levels (implies -r)")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "Usage: gitsync [flags] [DIR]\n\n")
 		_, _ = fmt.Fprintf(fs.Output(), "DIR defaults to the repository root or current directory.\n\nFlags:\n")
@@ -68,6 +73,17 @@ func parseArgs(argv []string, stderr io.Writer) (options, error) {
 	if len(positionals) == 1 {
 		opts.scanDir = positionals[0]
 	}
+	// --depth implies --recursive.
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "depth" {
+			opts.recursive = true
+		}
+	})
+	if opts.depth < 1 {
+		err := fmt.Errorf("depth must be at least 1, got %d", opts.depth)
+		_, _ = fmt.Fprintf(fs.Output(), "gitsync: %v\n", err)
+		return options{}, err
+	}
 	return opts, nil
 }
 
@@ -94,15 +110,25 @@ func main() {
 		return
 	}
 
-	subdirs, err := scan.GetSubdirectories(scanDir)
+	results, err := scan.Scan(scanDir, scan.Options{Recursive: opts.recursive, MaxDepth: opts.depth})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	results := scan.ProcessSubdirectoriesParallel(subdirs)
-
+	// A directory that contains repositories is worth showing even though
+	// it is not one — as context, so the summary does not tally it. Under
+	// a filter, containers instead show only when a match lives inside.
 	filterGiven := opts.filter != ""
+	if !filterGiven {
+		for _, status := range results {
+			if status.Type == vcs.Dir && status.NestedRepos > 0 {
+				status.ContextOnly = true
+			}
+		}
+	}
+
+	matches := 0
 	if filterGiven {
 		filter, err := query.ParseFilter(opts.filter)
 		if err != nil {
@@ -110,9 +136,27 @@ func main() {
 			os.Exit(2)
 		}
 
+		// Keep matching rows; an ancestor of a match is kept too, as
+		// context — it is the only way to see where the match lives.
+		// Results are ordered so ancestors precede descendants, so a row's
+		// ancestors are the nearest preceding rows at each shallower depth.
+		keep := make([]bool, len(results))
+		for i, status := range results {
+			if !filter.Match(status) {
+				continue
+			}
+			matches++
+			keep[i] = true
+			for depth, j := status.Depth, i-1; depth > 1 && j >= 0; j-- {
+				if results[j].Depth == depth-1 {
+					keep[j] = true
+					depth--
+				}
+			}
+		}
 		var filtered []*vcs.RepoStatus
-		for _, status := range results {
-			if filter.Match(status) {
+		for i, status := range results {
+			if keep[i] {
 				filtered = append(filtered, status)
 			}
 		}
@@ -128,5 +172,5 @@ func main() {
 
 	visible, hiddenBare := report.PrepareDisplay(results, opts.showAll)
 	report.PrintReport(os.Stdout, visible, hiddenBare, report.UseColor(os.Stdout))
-	os.Exit(report.FilterExitCode(filterGiven, len(results)))
+	os.Exit(report.FilterExitCode(filterGiven, matches))
 }

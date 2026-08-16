@@ -13,8 +13,8 @@ import (
 type RepoType int
 
 const (
-	// Bare is a directory that is neither a Git nor a Jujutsu repository.
-	Bare RepoType = iota
+	// Dir is a directory that is neither a Git nor a Jujutsu repository.
+	Dir RepoType = iota
 	// Git is a Git repository.
 	Git
 	// Jujutsu is a Jujutsu repository.
@@ -23,8 +23,8 @@ const (
 
 func (rt RepoType) String() string {
 	switch rt {
-	case Bare:
-		return "bare"
+	case Dir:
+		return "dir"
 	case Git:
 		return "git"
 	case Jujutsu:
@@ -56,6 +56,16 @@ type RepoStatus struct {
 	Behind    Count
 	Corrupted bool
 	Error     string
+	// NestedRepos counts immediate child directories that are themselves
+	// repositories. It is only populated for non-repository directories.
+	NestedRepos int
+	// Depth is the directory's level below the scan root: 1 for an
+	// immediate subdirectory. Zero means the root level, for statuses
+	// built outside a recursive scan.
+	Depth int
+	// ContextOnly marks a row kept only to locate its visible descendants:
+	// it is displayed but excluded from the summary tallies.
+	ContextOnly bool
 }
 
 // GetDefaultDirectory returns the repository root to scan when no directory is
@@ -93,7 +103,7 @@ func DetectRepoType(dir string) RepoType {
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 		return Git
 	}
-	return Bare
+	return Dir
 }
 
 // GetRepoStatus returns the status for a single directory.
@@ -102,7 +112,7 @@ func GetRepoStatus(dir string) (*RepoStatus, error) {
 		Path: dir,
 		Type: DetectRepoType(dir),
 	}
-	if status.Type == Bare {
+	if status.Type == Dir {
 		return status, nil
 	}
 	if err := BackendFor(status.Type).Status(status); err != nil {

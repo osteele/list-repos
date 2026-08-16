@@ -212,7 +212,7 @@ func TestGetRepoStatus(t *testing.T) {
 		dir      string
 		repoType RepoType
 	}{
-		{bareDir, Bare},
+		{bareDir, Dir},
 		{gitDir, Git},
 		{jjDir, Jujutsu},
 		{jjGitDir, Jujutsu},

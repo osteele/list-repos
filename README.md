@@ -9,7 +9,7 @@
 
 For each subdirectory, it shows:
 
--   Whether it's a `git` repository, a `jujutsu` repository, or neither (`bare`).
+-   Whether it's a `git` repository, a `jujutsu` repository, or neither (`dir`). A plain directory that directly contains repositories shows a count, e.g. `3 repos`.
 -   Whether the working directory is `dirty` (has uncommitted changes).
 -   Whether the repository has a `remote`.
 -   Whether there are commits that haven't been pushed to the remote (`ahead`).
@@ -18,6 +18,7 @@ For each subdirectory, it shows:
 ## Features
 
 - **Parallel Processing**: Fast scanning using goroutines for concurrent repository checks
+- **Nested Discovery**: Optional recursive descent (`-r`) finds repositories nested inside plain directories, at any depth up to `--depth`
 - **Expression-Based Filtering**: Powerful filter expressions to show only the repositories you care about
 - **Flexible Sorting**: Sort by multiple fields in any order
 - **Smart Defaults**: Automatically detects repository root when run from within a repo
@@ -91,7 +92,7 @@ gitsync -f "clean & remote"
 - `corrupted` - Git repository appears damaged
 - `git` - Git repository
 - `jj` or `jujutsu` - Jujutsu repository
-- `bare` - Not a repository
+- `dir` - Not a repository (`bare` is accepted as an alias)
 
 #### Filter Operators
 - `&` or `and` - Both conditions must be true
@@ -130,6 +131,20 @@ gitsync -s "!dirty,!ahead,name"
 
 Use `!` prefix to reverse the sort order for a field.
 
+### Recursive Discovery
+
+By default only immediate subdirectories are scanned. Use `-r`/`--recursive` to descend into directories that are not themselves repositories:
+
+```bash
+# Find repositories nested at any depth (up to 4 levels)
+gitsync -r ~/code
+
+# Cap the descent at 3 levels (--depth implies -r)
+gitsync -r --depth 3 ~/code
+```
+
+Descent stops as soon as a repository is found, so only the outermost repositories are reported — never a repo nested inside another repo. Directories that contain repositories are listed with their children indented beneath them. Hidden directories (`.`/`_` prefix) and heavy build directories (`node_modules`, `vendor`, `target`, `build`, `dist`, `venv`) are never descended into.
+
 ### Interactive TUI
 
 Launch the interactive terminal UI with `-i` or `--interactive`:
@@ -143,6 +158,8 @@ In the TUI you can navigate the directory tree with `↑`/`↓` (or `k`/`j`) and
 
 | Key | Action |
 |-----|--------|
+| `→` / `l` | Expand a directory to reveal the repositories it contains (scanned on first expansion, then cached) |
+| `←` / `h` | Collapse an expanded directory |
 | `p` | Push |
 | `u` | Pull (Git) / fetch (Jujutsu) |
 | `c` | Commit all changes; opens a prompt for the message |
@@ -179,8 +196,8 @@ The token needs only `repo` or `public_repo` scope for private or public reposit
 
 The output is a table with three columns:
 
-- **Name**: The name of the subdirectory.
-- **VCS**: The version control system: `git`, `jujutsu`, or `bare`.
+- **Name**: The name of the subdirectory, indented one level per nesting depth under a container directory.
+- **VCS**: The version control system: `git`, `jujutsu`, or `dir` (not a repository).
 - **Status**: Only the noteworthy states, so a healthy repository stays quiet. Possible tokens:
 
 | Token | Meaning |
@@ -192,6 +209,7 @@ The output is a table with three columns:
 | `behind N` | The remote has `N` commits not present locally |
 | `ahead ?` | A remote exists but the count could not be determined (e.g. no upstream configured) |
 | `no remote` | No remote is configured |
+| `N repos` | A plain directory directly containing `N` repositories |
 | `clean` | None of the above |
 
 `error` and `corrupted` suppress the other tokens, since the rest of the status could not be determined reliably. When the output is a terminal, tokens are colored by severity; set `NO_COLOR` to disable.
@@ -214,12 +232,12 @@ broken-checkout      git      corrupted
 6 repos (+1 non-repo hidden): 2 dirty, 2 ahead, 1 no remote, 1 corrupted
 ```
 
-Non-repository directories are hidden by default. Use `--all` to include them:
+Non-repository directories are hidden by default, unless they contain repositories — those are shown with their count (e.g. `18 repos`) so nested work is never invisible. Use `--all` to include the rest:
 
 ```
 $ gitsync --all
 Name             VCS   Status
-old-experiments  bare
+old-experiments  dir
 ...
 ```
 

@@ -31,7 +31,7 @@ func TestParseFilter(t *testing.T) {
 		{"git", vcs.RepoStatus{Type: vcs.Jujutsu}, false},
 		{"jj", vcs.RepoStatus{Type: vcs.Jujutsu}, true},
 		{"jj", vcs.RepoStatus{Type: vcs.Git}, false},
-		{"bare", vcs.RepoStatus{Type: vcs.Bare}, true},
+		{"bare", vcs.RepoStatus{Type: vcs.Dir}, true},
 		{"bare", vcs.RepoStatus{Type: vcs.Git}, false},
 
 		// AND operations
@@ -53,7 +53,7 @@ func TestParseFilter(t *testing.T) {
 		{"dirty | ahead", vcs.RepoStatus{Dirty: true, Ahead: vcs.Count{N: 0, Known: true}}, true},
 		{"git | jj", vcs.RepoStatus{Type: vcs.Git}, true},
 		{"git | jj", vcs.RepoStatus{Type: vcs.Jujutsu}, true},
-		{"git | jj", vcs.RepoStatus{Type: vcs.Bare}, false},
+		{"git | jj", vcs.RepoStatus{Type: vcs.Dir}, false},
 
 		// NOT operations
 		{"not dirty", vcs.RepoStatus{Dirty: false}, true},
@@ -65,15 +65,15 @@ func TestParseFilter(t *testing.T) {
 		// Complex expressions with parentheses
 		{"(git | jj) & dirty", vcs.RepoStatus{Type: vcs.Git, Dirty: true}, true},
 		{"(git | jj) & dirty", vcs.RepoStatus{Type: vcs.Jujutsu, Dirty: true}, true},
-		{"(git | jj) & dirty", vcs.RepoStatus{Type: vcs.Bare, Dirty: true}, false},
+		{"(git | jj) & dirty", vcs.RepoStatus{Type: vcs.Dir, Dirty: true}, false},
 		{"(git | jj) & dirty", vcs.RepoStatus{Type: vcs.Git, Dirty: false}, false},
-		{"!(git | jj)", vcs.RepoStatus{Type: vcs.Bare}, true},
+		{"!(git | jj)", vcs.RepoStatus{Type: vcs.Dir}, true},
 		{"!(git | jj)", vcs.RepoStatus{Type: vcs.Git}, false},
 
 		// Mixed complexity
 		{"dirty & (git | jj) & ahead", vcs.RepoStatus{Type: vcs.Git, Dirty: true, Ahead: vcs.Count{N: 1, Known: true}}, true},
 		{"dirty & (git | jj) & ahead", vcs.RepoStatus{Type: vcs.Git, Dirty: true, Ahead: vcs.Count{N: 0, Known: true}}, false},
-		{"(dirty & ahead) | bare", vcs.RepoStatus{Type: vcs.Bare}, true},
+		{"(dirty & ahead) | bare", vcs.RepoStatus{Type: vcs.Dir}, true},
 		{"(dirty & ahead) | bare", vcs.RepoStatus{Dirty: true, Ahead: vcs.Count{N: 1, Known: true}}, true},
 		{"(dirty & ahead) | bare", vcs.RepoStatus{Dirty: true, Ahead: vcs.Count{N: 0, Known: true}, Type: vcs.Git}, false},
 

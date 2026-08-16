@@ -62,7 +62,7 @@ func TestSortResults(t *testing.T) {
 	results := []*vcs.RepoStatus{
 		{Path: "/path/zebra", Type: vcs.Git, Dirty: true, Ahead: vcs.Count{N: 0, Known: true}, Remote: true},
 		{Path: "/path/alpha", Type: vcs.Jujutsu, Dirty: false, Ahead: vcs.Count{N: 1, Known: true}, Remote: false},
-		{Path: "/path/beta", Type: vcs.Bare, Dirty: false, Ahead: vcs.Count{}, Remote: false},
+		{Path: "/path/beta", Type: vcs.Dir, Dirty: false, Ahead: vcs.Count{}, Remote: false},
 		{Path: "/path/gamma", Type: vcs.Git, Dirty: true, Ahead: vcs.Count{N: 3, Known: true}, Remote: true},
 	}
 
@@ -72,12 +72,12 @@ func TestSortResults(t *testing.T) {
 	}{
 		{"name", []string{"alpha", "beta", "gamma", "zebra"}},
 		{"!name", []string{"zebra", "gamma", "beta", "alpha"}},
-		{"vcs", []string{"beta", "zebra", "gamma", "alpha"}},              // Bare, Git, Git, Jujutsu
+		{"vcs", []string{"beta", "zebra", "gamma", "alpha"}},              // Dir, Git, Git, Jujutsu
 		{"dirty", []string{"zebra", "gamma", "alpha", "beta"}},            // Dirty first
 		{"!dirty", []string{"alpha", "beta", "zebra", "gamma"}},           // Clean first
 		{"ahead", []string{"gamma", "alpha", "zebra", "beta"}},            // Higher counts first; unknown sorts as 0
 		{"dirty,name", []string{"gamma", "zebra", "alpha", "beta"}},       // Dirty first, then by name
-		{"vcs,name", []string{"beta", "gamma", "zebra", "alpha"}},         // By VCS (Bare, Git, Git, Jujutsu), then by name
+		{"vcs,name", []string{"beta", "gamma", "zebra", "alpha"}},         // By VCS (Dir, Git, Git, Jujutsu), then by name
 		{"dirty,ahead,name", []string{"gamma", "zebra", "alpha", "beta"}}, // Complex sort
 	}
 

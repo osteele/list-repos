@@ -14,7 +14,7 @@ type Backend interface {
 	Commit(path, message string) error
 }
 
-// BackendFor returns the Backend for a detected repo type. Bare and unknown
+// BackendFor returns the Backend for a detected repo type. Dir and unknown
 // types fall back to Git, matching the historical action dispatch.
 func BackendFor(t RepoType) Backend {
 	if t == Jujutsu {

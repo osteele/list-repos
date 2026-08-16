@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +33,14 @@ type tuiItem struct {
 	path   string
 	status *vcs.RepoStatus
 	busy   bool
+	// depth is the indentation level: 0 for a top-level row, one more per
+	// expansion level below it.
+	depth int
+	// expanded reports whether a container's children are showing. kids
+	// caches the descendant rows — including any deeper expanded subtrees —
+	// across a collapse, so re-expanding does not rescan.
+	expanded bool
+	kids     []tuiItem
 	// lastResult holds the full text of the most recent action result,
 	// which is often multi-line command output worth reading in full.
 	lastResult string
@@ -39,6 +48,12 @@ type tuiItem struct {
 
 func (i tuiItem) name() string {
 	return filepath.Base(i.path)
+}
+
+// expandable reports whether the row is a directory that can be expanded
+// to reveal its contents. The answer is unknown until the status loads.
+func (i tuiItem) expandable() bool {
+	return i.status != nil && i.status.Type == vcs.Dir
 }
 
 // icon renders the item's state as badges. Failure states stand alone;
@@ -57,7 +72,7 @@ func (i tuiItem) icon() string {
 	if i.status.Error != "" {
 		return "⚠️"
 	}
-	if i.status.Type == vcs.Bare {
+	if i.status.Type == vcs.Dir {
 		return "📁"
 	}
 	var badges string
@@ -97,8 +112,16 @@ func (i tuiItem) statusText() string {
 }
 
 type statusMsg struct {
-	index  int
+	path   string
 	status *vcs.RepoStatus
+}
+
+// childrenMsg carries the result of lazily scanning a container's children
+// on first expansion.
+type childrenMsg struct {
+	path     string
+	statuses []*vcs.RepoStatus
+	err      error
 }
 
 type actionDoneMsg struct {
@@ -137,6 +160,8 @@ type model struct {
 type keyMap struct {
 	Up        key.Binding
 	Down      key.Binding
+	Expand    key.Binding
+	Collapse  key.Binding
 	Push      key.Binding
 	Pull      key.Binding
 	Commit    key.Binding
@@ -156,7 +181,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Push, k.Pull, k.Commit, k.Sync},
+		{k.Up, k.Down, k.Expand, k.Collapse, k.Push, k.Pull, k.Commit, k.Sync},
 		{k.Repair, k.AddRemote, k.Open, k.Reveal, k.Detail, k.Quit},
 	}
 }
@@ -169,6 +194,14 @@ var defaultKeyMap = keyMap{
 	Down: key.NewBinding(
 		key.WithKeys("down", "j"),
 		key.WithHelp("↓/j", "down"),
+	),
+	Expand: key.NewBinding(
+		key.WithKeys("right", "l"),
+		key.WithHelp("→/l", "expand"),
+	),
+	Collapse: key.NewBinding(
+		key.WithKeys("left", "h"),
+		key.WithHelp("←/h", "collapse"),
 	),
 	Push: key.NewBinding(
 		key.WithKeys("p"),
@@ -254,12 +287,23 @@ func newModel(scanDir string) (model, error) {
 func (m model) Init() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.items))
 	for i := range m.items {
-		cmds = append(cmds, loadStatusCmd(i, m.items[i].path))
+		cmds = append(cmds, loadStatusCmd(m.items[i].path))
 	}
 	return tea.Batch(cmds...)
 }
 
-func loadStatusCmd(index int, path string) tea.Cmd {
+// findByPath locates a row by path. Rows come and go as containers expand
+// and collapse, so messages in flight must address rows by path, not index.
+func (m model) findByPath(path string) int {
+	for i, item := range m.items {
+		if item.path == path {
+			return i
+		}
+	}
+	return -1
+}
+
+func loadStatusCmd(path string) tea.Cmd {
 	return func() tea.Msg {
 		status, err := vcs.GetRepoStatus(path)
 		if err != nil {
@@ -267,13 +311,33 @@ func loadStatusCmd(index int, path string) tea.Cmd {
 			// status detection produced (including its Corrupted verdict) and
 			// surface the error without forcing the repair-dangerous state.
 			if status == nil {
-				status = &vcs.RepoStatus{Path: path, Type: vcs.Bare}
+				status = &vcs.RepoStatus{Path: path, Type: vcs.Dir}
 			}
 			if status.Error == "" {
 				status.Error = err.Error()
 			}
 		}
-		return statusMsg{index: index, status: status}
+		if status.Type == vcs.Dir {
+			status.NestedRepos = scan.CountNestedRepos(path)
+		}
+		return statusMsg{path: path, status: status}
+	}
+}
+
+// loadChildrenCmd scans a container's immediate children through the
+// bounded-worker scanner, so expansion cost is one readdir plus one
+// bounded status pass.
+func loadChildrenCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		subdirs, err := scan.GetSubdirectories(path)
+		if err != nil {
+			return childrenMsg{path: path, err: err}
+		}
+		statuses, _ := scan.ScanDirectories(subdirs)
+		sort.Slice(statuses, func(i, j int) bool {
+			return filepath.Base(statuses[i].Path) < filepath.Base(statuses[j].Path)
+		})
+		return childrenMsg{path: path, statuses: statuses}
 	}
 }
 
@@ -339,25 +403,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case statusMsg:
-		if msg.index >= 0 && msg.index < len(m.items) {
-			m.items[msg.index].status = msg.status
+		if idx := m.findByPath(msg.path); idx >= 0 {
+			m.items[idx].status = msg.status
 		}
 		return m, nil
 
+	case childrenMsg:
+		idx := m.findByPath(msg.path)
+		if idx < 0 {
+			return m, nil
+		}
+		m.items[idx].busy = false
+		if msg.err != nil {
+			m.message = fmt.Sprintf("expand %s failed: %v", m.items[idx].name(), msg.err)
+			m.messageSticky = true
+			return m, nil
+		}
+		kids := make([]tuiItem, 0, len(msg.statuses))
+		for _, status := range msg.statuses {
+			kids = append(kids, tuiItem{path: status.Path, depth: m.items[idx].depth + 1, status: status})
+		}
+		m.items[idx].kids = kids
+		m.items[idx].expanded = true
+		m.items = insertItems(m.items, idx+1, kids)
+		return m.clampView(), nil
+
 	case actionDoneMsg:
 		m.message = msg.message
-		idx := -1
-		for i, item := range m.items {
-			if item.path == msg.path {
-				idx = i
-				break
-			}
-		}
+		idx := m.findByPath(msg.path)
 		var cmds []tea.Cmd
 		if idx >= 0 {
 			m.items[idx].busy = false
 			m.items[idx].lastResult = msg.message
-			cmds = append(cmds, refreshStatusCmd(idx, m.items[idx].path))
+			cmds = append(cmds, refreshStatusCmd(m.items[idx].path))
 		}
 		// Failures stay until the next keypress: their command output is
 		// exactly what the user needs to read.
@@ -421,6 +499,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.clampView(), nil
 
+	case key.Matches(msg, m.keys.Expand):
+		return m.expand()
+
+	case key.Matches(msg, m.keys.Collapse):
+		return m.collapse()
+
 	case key.Matches(msg, m.keys.Detail):
 		return m.showDetailView()
 
@@ -458,6 +542,49 @@ func (m model) current() (tuiItem, bool) {
 		return tuiItem{}, false
 	}
 	return m.items[m.cursor], true
+}
+
+// insertItems splices rows into items at index at.
+func insertItems(items []tuiItem, at int, rows []tuiItem) []tuiItem {
+	out := make([]tuiItem, 0, len(items)+len(rows))
+	out = append(out, items[:at]...)
+	out = append(out, rows...)
+	out = append(out, items[at:]...)
+	return out
+}
+
+// expand reveals the selected container's children. The first expansion
+// scans them through the bounded-worker scanner, showing the row's busy
+// state while that runs; later expansions reuse the cached rows.
+func (m model) expand() (tea.Model, tea.Cmd) {
+	item, ok := m.current()
+	if !ok || !item.expandable() || item.expanded || item.busy {
+		return m, nil
+	}
+	if item.kids != nil {
+		m.items[m.cursor].expanded = true
+		m.items = insertItems(m.items, m.cursor+1, item.kids)
+		return m.clampView(), nil
+	}
+	m.items[m.cursor].busy = true
+	return m, loadChildrenCmd(item.path)
+}
+
+// collapse hides the selected container's descendants, keeping them cached
+// for the next expansion.
+func (m model) collapse() (tea.Model, tea.Cmd) {
+	item, ok := m.current()
+	if !ok || !item.expanded {
+		return m, nil
+	}
+	end := m.cursor + 1
+	for end < len(m.items) && m.items[end].depth > item.depth {
+		end++
+	}
+	m.items[m.cursor].kids = append([]tuiItem(nil), m.items[m.cursor+1:end]...)
+	m.items[m.cursor].expanded = false
+	m.items = append(m.items[:m.cursor+1], m.items[end:]...)
+	return m.clampView(), nil
 }
 
 func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -679,8 +806,8 @@ func (m model) revealInFinder() (tea.Model, tea.Cmd) {
 	})
 }
 
-func refreshStatusCmd(index int, path string) tea.Cmd {
-	return loadStatusCmd(index, path)
+func refreshStatusCmd(path string) tea.Cmd {
+	return loadStatusCmd(path)
 }
 
 func clearAfter(d time.Duration) tea.Cmd {
@@ -727,7 +854,19 @@ func (m model) View() string {
 		}
 		for i := m.offset; i < end; i++ {
 			item := m.items[i]
-			line := fmt.Sprintf("%s %s  %s", item.icon(), item.name(), item.statusText())
+			// Expandable rows carry a disclosure marker before the name;
+			// children indent one level per expansion depth.
+			name := item.name()
+			if item.depth > 0 {
+				name = strings.Repeat("  ", item.depth) + name
+			}
+			switch {
+			case item.expanded:
+				name = "▾ " + name
+			case item.expandable():
+				name = "▸ " + name
+			}
+			line := fmt.Sprintf("%s %s  %s", item.icon(), name, item.statusText())
 			if i == m.cursor {
 				line = "> " + line
 				// Pad the bar to the full width so the reversed selection

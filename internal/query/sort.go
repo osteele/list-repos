@@ -65,20 +65,55 @@ func ParseSort(expr string) ([]SortKey, error) {
 	return keys, nil
 }
 
-// SortResults sorts repository statuses according to the given sort keys
+// SortResults sorts repository statuses according to the given sort keys.
+// Sorting applies within each sibling group: a directory's children are
+// ordered among themselves but always immediately follow their parent, so
+// sorting never breaks the parent/child grouping. A row whose parent is
+// absent from the list sorts as a root.
 func SortResults(results []*vcs.RepoStatus, keys []SortKey) {
-	sort.Slice(results, func(i, j int) bool {
-		for _, key := range keys {
-			cmp := key.Compare(results[i], results[j])
-			if cmp < 0 {
-				return true
-			} else if cmp > 0 {
-				return false
-			}
-			// If equal, continue to next sort key
+	present := make(map[string]bool, len(results))
+	for _, s := range results {
+		present[s.Path] = true
+	}
+
+	var roots []*vcs.RepoStatus
+	children := make(map[string][]*vcs.RepoStatus)
+	for _, s := range results {
+		if parent := filepath.Dir(s.Path); present[parent] {
+			children[parent] = append(children[parent], s)
+		} else {
+			roots = append(roots, s)
 		}
-		return false
-	})
+	}
+
+	byKeys := func(group []*vcs.RepoStatus) {
+		sort.SliceStable(group, func(i, j int) bool {
+			for _, key := range keys {
+				cmp := key.Compare(group[i], group[j])
+				if cmp < 0 {
+					return true
+				} else if cmp > 0 {
+					return false
+				}
+				// If equal, continue to next sort key
+			}
+			return false
+		})
+	}
+	byKeys(roots)
+	for _, group := range children {
+		byKeys(group)
+	}
+
+	out := results[:0]
+	var emit func(group []*vcs.RepoStatus)
+	emit = func(group []*vcs.RepoStatus) {
+		for _, s := range group {
+			out = append(out, s)
+			emit(children[s.Path])
+		}
+	}
+	emit(roots)
 }
 
 // Sort key implementations
@@ -109,7 +144,7 @@ type vcsSortKey struct {
 }
 
 func (k *vcsSortKey) Compare(a, b *vcs.RepoStatus) int {
-	// Sort order: Git < Jujutsu < Bare
+	// Sort order: Dir < Git < Jujutsu
 	result := 0
 	if a.Type < b.Type {
 		result = -1

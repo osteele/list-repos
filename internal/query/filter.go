@@ -121,10 +121,10 @@ func (f *jjFilter) Match(status *vcs.RepoStatus) bool {
 	return status.Type == vcs.Jujutsu
 }
 
-type bareFilter struct{}
+type dirFilter struct{}
 
-func (f *bareFilter) Match(status *vcs.RepoStatus) bool {
-	return status.Type == vcs.Bare
+func (f *dirFilter) Match(status *vcs.RepoStatus) bool {
+	return status.Type == vcs.Dir
 }
 
 // Parser
@@ -245,8 +245,8 @@ func (p *filterParser) parseTerm() (Filter, error) {
 		return &gitFilter{}, nil
 	case "jj", "jujutsu":
 		return &jjFilter{}, nil
-	case "bare":
-		return &bareFilter{}, nil
+	case "dir", "bare": // bare is the pre-dir name for the same term
+		return &dirFilter{}, nil
 	default:
 		return nil, fmt.Errorf("unknown filter term: %s", term)
 	}

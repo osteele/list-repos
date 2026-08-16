@@ -76,12 +76,12 @@ func TestStatusTokens(t *testing.T) {
 		},
 		{
 			name:     "bare directory has no status",
-			status:   &vcs.RepoStatus{Type: vcs.Bare},
+			status:   &vcs.RepoStatus{Type: vcs.Dir},
 			expected: nil,
 		},
 		{
 			name:     "bare directory with a scan error still shows the error",
-			status:   &vcs.RepoStatus{Type: vcs.Bare, Error: "permission denied"},
+			status:   &vcs.RepoStatus{Type: vcs.Dir, Error: "permission denied"},
 			expected: []StateToken{{StateError, "error: permission denied"}},
 		},
 	}
@@ -153,8 +153,8 @@ func TestSummaryLine(t *testing.T) {
 			name: "bare directories shown with --all count as non-repos",
 			visible: []*vcs.RepoStatus{
 				{Type: vcs.Git, Dirty: true},
-				{Type: vcs.Bare},
-				{Type: vcs.Bare},
+				{Type: vcs.Dir},
+				{Type: vcs.Dir},
 			},
 			expected: "1 repo, 2 non-repos: 1 dirty, 1 no remote",
 		},
@@ -202,7 +202,7 @@ func TestFilterExitCode(t *testing.T) {
 
 func TestPrepareDisplay(t *testing.T) {
 	repo := &vcs.RepoStatus{Type: vcs.Git}
-	bare := &vcs.RepoStatus{Type: vcs.Bare}
+	bare := &vcs.RepoStatus{Type: vcs.Dir}
 	results := []*vcs.RepoStatus{repo, bare, bare}
 
 	visible, hidden := PrepareDisplay(results, false)
@@ -227,7 +227,7 @@ func TestPrintReport(t *testing.T) {
 	visible := []*vcs.RepoStatus{
 		{Path: "/tmp/scan/" + longName, Type: vcs.Git, Remote: true, Ahead: vcs.Count{Known: true}},
 		{Path: "/tmp/scan/todo", Type: vcs.Git, Remote: true, Dirty: true, Ahead: vcs.Count{N: 2, Known: true}},
-		{Path: "/tmp/scan/junk", Type: vcs.Bare},
+		{Path: "/tmp/scan/junk", Type: vcs.Dir},
 	}
 
 	var buf bytes.Buffer
@@ -250,7 +250,7 @@ func TestPrintReport(t *testing.T) {
 	for _, line := range lines[1:4] {
 		vcs := strings.Index(line, "git")
 		if vcs == -1 {
-			vcs = strings.Index(line, "bare")
+			vcs = strings.Index(line, "dir")
 		}
 		if vcsOffset == -1 {
 			vcsOffset = vcs
