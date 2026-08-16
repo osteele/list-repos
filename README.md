@@ -5,14 +5,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Release](https://img.shields.io/github/v/release/osteele/gitsync?include_prereleases)](https://github.com/osteele/gitsync/releases)
 
-`gitsync` is a command-line tool that scans the immediate subdirectories of a specified path (or the current directory) and displays their version control status.
+`gitsync` is a command-line tool that scans the immediate subdirectories of a specified path (or the current directory) and displays their version control status. It can run as a batch list or as an interactive TUI.
 
 For each subdirectory, it shows:
 
 -   Whether it's a `git` repository, a `jujutsu` repository, or neither (`bare`).
--   For git repositories, whether the working directory is `dirty` (has uncommitted changes).
+-   Whether the working directory is `dirty` (has uncommitted changes).
 -   Whether the repository has a `remote`.
--   Whether there are commits that haven't been pushed to the `origin` remote.
+-   Whether there are commits that haven't been pushed to the remote (`ahead`).
+-   Whether the remote has commits not present locally (`behind`).
 
 ## Features
 
@@ -21,6 +22,7 @@ For each subdirectory, it shows:
 - **Flexible Sorting**: Sort by multiple fields in any order
 - **Smart Defaults**: Automatically detects repository root when run from within a repo
 - **Multi-VCS Support**: Works with both Git and Jujutsu repositories
+- **Interactive TUI**: Navigate the directory tree and push, pull, commit, sync, repair, or add a GitHub remote
 
 
 ## Installation
@@ -83,8 +85,10 @@ gitsync -f "clean & remote"
 - `dirty` - Has uncommitted changes
 - `clean` - No uncommitted changes (opposite of dirty)
 - `ahead` - Has commits not pushed to remote
+- `behind` - Remote has commits not present locally
 - `remote` - Has a configured remote
 - `local` - No configured remote (opposite of remote)
+- `corrupted` - Git repository appears damaged
 - `git` - Git repository
 - `jj` or `jujutsu` - Jujutsu repository
 - `bare` - Not a repository
@@ -121,9 +125,45 @@ gitsync -s "!dirty,!ahead,name"
 - `vcs` or `type` - Version control system type
 - `dirty` - Dirty status
 - `ahead` - Ahead commits status
+- `behind` - Behind commits status
 - `remote` - Remote configuration status
 
 Use `!` prefix to reverse the sort order for a field.
+
+### Interactive TUI
+
+Launch the interactive terminal UI with `-i` or `--interactive`:
+
+```bash
+gitsync -i
+gitsync -i ~/code
+```
+
+In the TUI you can navigate the directory tree with `↑`/`↓` (or `k`/`j`) and act on the selected repository:
+
+| Key | Action |
+|-----|--------|
+| `p` | Push |
+| `u` | Pull / fetch |
+| `c` | Commit all changes with the default message |
+| `s` | Sync (pull then push) |
+| `r` | Repair a corrupted Git repository |
+| `a` | Add or replace `origin` with the matching GitHub remote |
+| `o` | Open the repository in `$EDITOR` |
+| `f` | Reveal the repository in the system file manager |
+| `q` / `ctrl+c` | Quit |
+
+The status icon next to each directory updates in the background. A message area at the bottom shows the result of each action.
+
+#### GitHub remote setup
+
+The `a` key uses the GitHub REST API to find a repository named after the local directory under your authenticated user. Set a token in your environment:
+
+```bash
+export GITHUB_TOKEN=ghp_...
+```
+
+The token needs only `repo` or `public_repo` scope for private or public repositories respectively.
 
 ### Output
 

@@ -95,6 +95,18 @@ func (f *localFilter) Match(status *RepoStatus) bool {
 	return !status.Remote
 }
 
+type behindFilter struct{}
+
+func (f *behindFilter) Match(status *RepoStatus) bool {
+	return status.Behind
+}
+
+type corruptedFilter struct{}
+
+func (f *corruptedFilter) Match(status *RepoStatus) bool {
+	return status.Corrupted
+}
+
 type gitFilter struct{}
 
 func (f *gitFilter) Match(status *RepoStatus) bool {
@@ -219,10 +231,14 @@ func (p *filterParser) parseTerm() (Filter, error) {
 		return &cleanFilter{}, nil
 	case "ahead":
 		return &aheadFilter{}, nil
+	case "behind":
+		return &behindFilter{}, nil
 	case "remote":
 		return &remoteFilter{}, nil
 	case "local":
 		return &localFilter{}, nil
+	case "corrupted":
+		return &corruptedFilter{}, nil
 	case "git":
 		return &gitFilter{}, nil
 	case "jj", "jujutsu":

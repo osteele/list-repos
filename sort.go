@@ -44,6 +44,8 @@ func ParseSort(expr string) ([]SortKey, error) {
 			key = &dirtySortKey{reverse: reverse}
 		case "ahead":
 			key = &aheadSortKey{reverse: reverse}
+		case "behind":
+			key = &behindSortKey{reverse: reverse}
 		case "remote":
 			key = &remoteSortKey{reverse: reverse}
 		default:
@@ -167,6 +169,25 @@ func (k *remoteSortKey) Compare(a, b *RepoStatus) int {
 	if a.Remote && !b.Remote {
 		result = -1
 	} else if !a.Remote && b.Remote {
+		result = 1
+	}
+
+	if k.reverse {
+		result = -result
+	}
+	return result
+}
+
+type behindSortKey struct {
+	reverse bool
+}
+
+func (k *behindSortKey) Compare(a, b *RepoStatus) int {
+	// Repos that are behind come first (when not reversed)
+	result := 0
+	if a.Behind && !b.Behind {
+		result = -1
+	} else if !a.Behind && b.Behind {
 		result = 1
 	}
 

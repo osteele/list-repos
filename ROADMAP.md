@@ -75,16 +75,18 @@ Address critical issues with branch detection and ahead status:
   - Indicate which workspace/worktree is active
   - Group related worktrees/workspaces together in output
 
-## Milestone: Interactive TUI
+## Milestone: Interactive TUI ✅
 
-- Implement a terminal user interface (TUI) using a library like `bubbletea` or `tview`.
-- The TUI will display the list of repositories and their statuses in a structured and interactive way.
-- Users will be able to select one or more repositories from the list.
-- Add functionality to:
+- ✅ Implement a terminal user interface (TUI) using `bubbletea`.
+- ✅ Display the list of repositories and their statuses in a structured and interactive way.
+- ✅ Users can select a repository and run actions on it.
+- ✅ Add functionality to:
   - Push selected repositories
   - Pull selected repositories
-  - Tug selected jj repositories
-  - Fold or unfold repositories that have
+  - Commit changes in selected repositories
+  - Sync selected repositories (pull then push)
+  - Repair corrupted Git repositories
+  - Add a GitHub remote to selected repositories
 
 ## Milestone: Background Fetching and Remote Status
 
