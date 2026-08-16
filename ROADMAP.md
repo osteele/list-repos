@@ -1,6 +1,6 @@
 # Roadmap
 
-This file outlines the future development milestones for the `dir-status` CLI.
+This file outlines the future development milestones for the `gitsync` CLI.
 
 See also: [Ideas](docs/ideas.md) for additional feature ideas and improvements.
 
@@ -26,25 +26,25 @@ Address critical issues with branch detection and ahead status:
 ✅ Implement a unified expression language for filtering and sorting that scales from CLI to future TUI:
 
 ### Filter Expression System
-- **Basic syntax:** `list-repos [--filter|-f EXPR] [--sort|-s EXPR]`
+- **Basic syntax:** `gitsync [--filter|-f EXPR] [--sort|-s EXPR]`
 - **Filter terms:** `dirty`, `clean`, `ahead`, `remote`, `local`, `git`, `jj`, `bare`
 - **Operators:** `and`/`&`, `or`/`|`, `not`/`!`, with parentheses for grouping
 - **Examples:**
-  - `list-repos -f "dirty"` - Only dirty repos
-  - `list-repos -f "git & dirty"` - Dirty git repos
-  - `list-repos -f "dirty | ahead"` - Dirty OR has unpushed commits
-  - `list-repos -f "(git | jj) & !remote"` - VCS repos without remotes
+  - `gitsync -f "dirty"` - Only dirty repos
+  - `gitsync -f "git & dirty"` - Dirty git repos
+  - `gitsync -f "dirty | ahead"` - Dirty OR has unpushed commits
+  - `gitsync -f "(git | jj) & !remote"` - VCS repos without remotes
 
 ### Sort Expression System
-- **Single field:** `list-repos -s name` (default)
-- **Multiple fields:** `list-repos -s "vcs,name"`
-- **Reverse order:** `list-repos -s "!dirty,name"` (dirty first, then by name)
+- **Single field:** `gitsync -s name` (default)
+- **Multiple fields:** `gitsync -s "vcs,name"`
+- **Reverse order:** `gitsync -s "!dirty,name"` (dirty first, then by name)
 - **Sort fields:** `name`, `vcs`, `dirty`, `ahead`, `modified` (future)
 
 ### Configuration File with Aliases
-- Support for `~/.config/list-repos/config.yaml`
+- Support for `~/.config/gitsync/config.yaml`
 - Define filter aliases for common queries
-- Example: `list-repos -f @work` to use predefined work filter
+- Example: `gitsync -f @work` to use predefined work filter
 
 ### Benefits
 - Single unified interface instead of multiple flags

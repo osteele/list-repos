@@ -1,4 +1,4 @@
-module github.com/osteele/list-repos
+module github.com/osteele/gitsync
 
 go 1.24
 

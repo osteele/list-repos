@@ -34,4 +34,4 @@ linters-settings:
 
   goimports:
     # Put local imports after 3rd party packages
-    local-prefixes: github.com/osteele/list-repos
+    local-prefixes: github.com/osteele/gitsync

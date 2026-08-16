@@ -1,6 +1,6 @@
-# Contributing to list-repos
+# Contributing to gitsync
 
-Thank you for your interest in contributing to list-repos!
+Thank you for your interest in contributing to gitsync!
 
 ## How to Contribute
 

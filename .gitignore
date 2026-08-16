@@ -19,8 +19,7 @@ go.work
 go.work.sum
 
 # Built binaries
-/list-repos
-/dir-status
+/gitsync
 
 # IDE files
 .vscode/
@@ -41,3 +40,5 @@ Thumbs.db
 
 # Lefthook
 .lefthook-local.yml
+# Repo-local Go build cache
+.gocache/

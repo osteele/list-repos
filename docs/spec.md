@@ -1,4 +1,4 @@
-# dir-status Specifications
+# gitsync Specifications
 
 ## Directory Scanning
 

@@ -1,6 +1,6 @@
-# list-repos Ideas
+# gitsync Ideas
 
-This document tracks potential features and improvements for the `list-repos` tool.
+This document tracks potential features and improvements for the `gitsync` tool.
 
 See also: [Roadmap](../ROADMAP.md) for planned development milestones.
 
@@ -9,7 +9,7 @@ See also: [Roadmap](../ROADMAP.md) for planned development milestones.
 ## Features
 
 ### Configuration
-- [ ] Support for `~/.config/list-repos/config.yaml` to customize:
+- [ ] Support for `~/.config/gitsync/config.yaml` to customize:
   - Default branch names (not just `main`) - *addresses current limitation*
   - Which directories to skip/ignore
   - Custom remote names (not just `origin`) - *addresses current limitation*
@@ -19,7 +19,7 @@ See also: [Roadmap](../ROADMAP.md) for planned development milestones.
   - Customizing the output format
 - [ ] Auto-detect default branch from git/jj configuration
 - [ ] Support for per-repository configuration overrides
-- [ ] Support for `.list-repos.yml` project-specific config file
+- [ ] Support for `.gitsync.yml` project-specific config file
 
 ### Repository Detection
 - [ ] Detect and report monorepos with nested repositories

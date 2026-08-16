@@ -1,11 +1,11 @@
-# list-repos
+# gitsync
 
-[![Go Version](https://img.shields.io/github/go-mod/go-version/osteele/list-repos)](https://go.dev/)
-[![Go Report Card](https://goreportcard.com/badge/github.com/osteele/list-repos)](https://goreportcard.com/report/github.com/osteele/list-repos)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/osteele/gitsync)](https://go.dev/)
+[![Go Report Card](https://goreportcard.com/badge/github.com/osteele/gitsync)](https://goreportcard.com/report/github.com/osteele/gitsync)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Release](https://img.shields.io/github/v/release/osteele/list-repos?include_prereleases)](https://github.com/osteele/list-repos/releases)
+[![Release](https://img.shields.io/github/v/release/osteele/gitsync?include_prereleases)](https://github.com/osteele/gitsync/releases)
 
-`list-repos` is a command-line tool that scans the immediate subdirectories of a specified path (or the current directory) and displays their version control status.
+`gitsync` is a command-line tool that scans the immediate subdirectories of a specified path (or the current directory) and displays their version control status.
 
 For each subdirectory, it shows:
 
@@ -25,23 +25,23 @@ For each subdirectory, it shows:
 
 ## Installation
 
-You can install `list-repos` using `go install`:
+You can install `gitsync` using `go install`:
 
 ```bash
-go install github.com/osteele/list-repos@latest
+go install github.com/osteele/gitsync@latest
 ```
 
 ## Usage
 
 ### Default Behavior
 
-When run without arguments, `list-repos` intelligently determines which directory to scan:
+When run without arguments, `gitsync` intelligently determines which directory to scan:
 
 1. **Inside a repository**: If you're inside a Git or Jujutsu repository, it scans subdirectories of the repository root
 2. **Outside a repository**: Scans subdirectories of the current directory
 
 ```bash
-list-repos
+gitsync
 ```
 
 ### Specifying a Directory
@@ -49,13 +49,13 @@ list-repos
 To scan a specific directory:
 
 ```bash
-list-repos ~/code
+gitsync ~/code
 ```
 
 Or:
 
 ```bash
-list-repos /path/to/directory
+gitsync /path/to/directory
 ```
 
 ### Filtering
@@ -64,19 +64,19 @@ Use the `--filter` or `-f` flag with expressions to show only specific repositor
 
 ```bash
 # Show only dirty repositories
-list-repos -f dirty
+gitsync -f dirty
 
 # Show only Git repositories that are dirty
-list-repos -f "git & dirty"
+gitsync -f "git & dirty"
 
 # Show repositories that are either dirty or have unpushed commits
-list-repos -f "dirty | ahead"
+gitsync -f "dirty | ahead"
 
 # Show Git or Jujutsu repos without remotes
-list-repos -f "(git | jj) & !remote"
+gitsync -f "(git | jj) & !remote"
 
 # Show clean repositories with remotes
-list-repos -f "clean & remote"
+gitsync -f "clean & remote"
 ```
 
 #### Filter Terms
@@ -101,19 +101,19 @@ Use the `--sort` or `-s` flag to control the output order:
 
 ```bash
 # Sort by name (default)
-list-repos -s name
+gitsync -s name
 
 # Sort by VCS type (Bare, Git, Jujutsu)
-list-repos -s vcs
+gitsync -s vcs
 
 # Sort with dirty repositories first, then by name
-list-repos -s "dirty,name"
+gitsync -s "dirty,name"
 
 # Reverse sort (clean repos first)
-list-repos -s "!dirty"
+gitsync -s "!dirty"
 
 # Complex sort: dirty first, then ahead, then by name
-list-repos -s "!dirty,!ahead,name"
+gitsync -s "!dirty,!ahead,name"
 ```
 
 #### Sort Fields
@@ -138,7 +138,7 @@ The output is a table with the following columns:
 ### Example Output
 
 ```
-$ list-repos
+$ gitsync
 Name                           VCS        Dirty   Remote  Ahead
 coffee-shop-finder             git        ✗       ✓       ✗
 todo-app-but-better            git        ✓       ✓       ✓
@@ -152,7 +152,7 @@ old-experiments                bare       ✗       ✗       ✗
 To use text instead of Unicode symbols, use the `--no-unicode` flag:
 
 ```
-$ list-repos --no-unicode
+$ gitsync --no-unicode
 Name                           VCS        Dirty   Remote  Ahead
 coffee-shop-finder             git        false   true    false
 todo-app-but-better            git        true    true    true
@@ -164,29 +164,29 @@ cat-meme-generator             jujutsu    false   false   false
 
 ```bash
 # Show only dirty Git repos, sorted by name
-list-repos -f "git & dirty" -s name
+gitsync -f "git & dirty" -s name
 
 # Show repos needing attention, with most urgent first
-list-repos -f "dirty | ahead" -s "!dirty,!ahead,name"
+gitsync -f "dirty | ahead" -s "!dirty,!ahead,name"
 
 # Find all local repos without remotes
-list-repos -f "!remote & (git | jj)"
+gitsync -f "!remote & (git | jj)"
 
 # Show Jujutsu repos that have unpushed changes
-list-repos -f "jj & (dirty | ahead)"
+gitsync -f "jj & (dirty | ahead)"
 ```
 
 ## Comparison with Similar Tools
 
-`list-repos` focuses on providing a quick overview of multiple repositories' VCS status in a single view. Here's how it compares to other tools:
+`gitsync` focuses on providing a quick overview of multiple repositories' VCS status in a single view. Here's how it compares to other tools:
 
-- **`git status` / `jj status`**: These show detailed status for a single repository. `list-repos` shows summary status for multiple repositories at once.
-- **`mr` (myrepos)**: A more complex tool for managing multiple repositories with support for various VCS and custom commands. Supports Git, SVN, Mercurial, and others through plugins, but not Jujutsu. `list-repos` is simpler and focused primarily on status reporting.
-- **`gita`**: Python tool for managing multiple git repos with colored output and group operations. Git-only, no Jujutsu support. `list-repos` is distributed as a single Go binary and supports both Git and Jujutsu.
-- **`multi-git-status`**: Bash script showing git status across repos. Git-only, no Jujutsu support. `list-repos` adds Jujutsu support and provides a cleaner table output.
-- **`git-xargs`**: Focused on running commands across multiple repos. Git-only, no Jujutsu support. `list-repos` focuses on status visualization with planned interactive features.
+- **`git status` / `jj status`**: These show detailed status for a single repository. `gitsync` shows summary status for multiple repositories at once.
+- **`mr` (myrepos)**: A more complex tool for managing multiple repositories with support for various VCS and custom commands. Supports Git, SVN, Mercurial, and others through plugins, but not Jujutsu. `gitsync` is simpler and focused primarily on status reporting.
+- **`gita`**: Python tool for managing multiple git repos with colored output and group operations. Git-only, no Jujutsu support. `gitsync` is distributed as a single Go binary and supports both Git and Jujutsu.
+- **`multi-git-status`**: Bash script showing git status across repos. Git-only, no Jujutsu support. `gitsync` adds Jujutsu support and provides a cleaner table output.
+- **`git-xargs`**: Focused on running commands across multiple repos. Git-only, no Jujutsu support. `gitsync` focuses on status visualization with planned interactive features.
 
-`list-repos` is designed as a fast tool to quickly see which of your local repositories need attention (uncommitted changes, unpushed commits, etc.), especially if you work with both Git and Jujutsu repositories.
+`gitsync` is designed as a fast tool to quickly see which of your local repositories need attention (uncommitted changes, unpushed commits, etc.), especially if you work with both Git and Jujutsu repositories.
 
 ## See Also
 
@@ -194,7 +194,7 @@ For more Jujutsu development tools, see [my collection of version control utilit
 
 ## Development
 
-For instructions on how to contribute to `list-repos`, see [DEVELOPMENT.md](DEVELOPMENT.md).
+For instructions on how to contribute to `gitsync`, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 # LICENSE
 

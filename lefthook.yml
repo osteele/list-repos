@@ -1,5 +1,5 @@
 # lefthook.yml
-# Git hooks configuration for list-repos
+# Git hooks configuration for gitsync
 
 pre-commit:
   parallel: false

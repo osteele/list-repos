@@ -45,7 +45,7 @@ integration-test:
 
 # Build the project
 build:
-    go build -o list-repos .
+    go build -o gitsync .
 
 # Run the CLI application
 run *ARGS:
@@ -53,7 +53,7 @@ run *ARGS:
 
 # Clean build artifacts
 clean:
-    rm -f list-repos dir-status
+    rm -f gitsync
     go clean
 
 # Update dependencies

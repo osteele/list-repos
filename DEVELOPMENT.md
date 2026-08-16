@@ -1,6 +1,6 @@
 # Development Guide
 
-This guide covers the technical aspects of developing `list-repos`.
+This guide covers the technical aspects of developing `gitsync`.
 
 ## Development Setup
 
@@ -12,8 +12,8 @@ This guide covers the technical aspects of developing `list-repos`.
 2. **Getting Started**
    ```bash
    # Clone the repository
-   git clone https://github.com/osteele/list-repos.git
-   cd list-repos
+   git clone https://github.com/osteele/gitsync.git
+   cd gitsync
 
    # Install dependencies and git hooks
    just setup
@@ -48,7 +48,7 @@ Run `just` to see all available commands:
 ## Project Structure
 
 ```
-list-repos/
+gitsync/
 ├── main.go           # Main application logic
 ├── main_test.go      # Unit tests
 ├── integration_test.go # Integration tests (placeholder)
