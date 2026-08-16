@@ -1,6 +1,8 @@
 # golangci-lint configuration
 # Documentation: https://golangci-lint.run/usage/configuration/
 
+version: "2"
+
 run:
   # Timeout for analysis
   timeout: 5m
@@ -17,21 +19,22 @@ linters:
     - staticcheck
     - unused
 
-    # Additional formatting linters
-    - gofumpt      # Stricter gofmt
-    - goimports    # Checks import ordering
-
     # Additional quality linters
     - misspell     # Finds commonly misspelled words
     - unconvert    # Remove unnecessary type conversions
     - unparam      # Reports unused function parameters
     - prealloc     # Find slice declarations that could be pre-allocated
 
-linters-settings:
-  gofumpt:
-    # Use simplified format
-    extra-rules: true
+formatters:
+  enable:
+    - gofumpt      # Stricter gofmt
+    - goimports    # Checks import ordering
 
-  goimports:
-    # Put local imports after 3rd party packages
-    local-prefixes: github.com/osteele/gitsync
+  settings:
+    gofumpt:
+      # Use simplified format
+      extra-rules: true
+
+    goimports:
+      # Put local imports after 3rd party packages
+      local-prefixes: github.com/osteele/gitsync
