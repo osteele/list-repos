@@ -1,4 +1,4 @@
-package main
+package vcs
 
 import (
 	"encoding/json"

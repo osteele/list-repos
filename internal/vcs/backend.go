@@ -1,4 +1,4 @@
-package main
+package vcs
 
 import (
 	"fmt"
@@ -14,9 +14,9 @@ type Backend interface {
 	Commit(path, message string) error
 }
 
-// backendFor returns the Backend for a detected repo type. Bare and unknown
+// BackendFor returns the Backend for a detected repo type. Bare and unknown
 // types fall back to Git, matching the historical action dispatch.
-func backendFor(t RepoType) Backend {
+func BackendFor(t RepoType) Backend {
 	if t == Jujutsu {
 		return jjBackend{}
 	}
@@ -29,7 +29,7 @@ func (gitBackend) Status(st *RepoStatus) error { return getGitStatus(st) }
 
 func (gitBackend) Push(path string) error {
 	// Refuse to push if there is no remote at all.
-	if !hasOrigin(path) {
+	if !HasOrigin(path) {
 		return fmt.Errorf("no origin remote configured")
 	}
 	// Set the upstream on first push. Detection is structural (rev-parse)
@@ -38,7 +38,7 @@ func (gitBackend) Push(path string) error {
 	if !hasUpstream(path) {
 		args = []string{"push", "-u", "origin", "HEAD"}
 	}
-	output, err := runVCS(path, networkTimeout, "git", args...)
+	output, err := RunVCS(path, NetworkTimeout, "git", args...)
 	if err != nil {
 		return fmt.Errorf("push failed: %w\n%s", err, output)
 	}
@@ -46,7 +46,7 @@ func (gitBackend) Push(path string) error {
 }
 
 func (gitBackend) Pull(path string) error {
-	output, err := runVCS(path, networkTimeout, "git", "pull", "--rebase")
+	output, err := RunVCS(path, NetworkTimeout, "git", "pull", "--rebase")
 	if err != nil {
 		return fmt.Errorf("pull failed: %w\n%s", err, output)
 	}
@@ -55,10 +55,10 @@ func (gitBackend) Pull(path string) error {
 
 func (gitBackend) Commit(path, message string) error {
 	// Stage all changes (including untracked) and commit.
-	if output, err := runVCS(path, statusTimeout, "git", "add", "-A"); err != nil {
+	if output, err := RunVCS(path, StatusTimeout, "git", "add", "-A"); err != nil {
 		return fmt.Errorf("git add failed: %w\n%s", err, output)
 	}
-	output, err := runVCS(path, statusTimeout, "git", "commit", "-m", message)
+	output, err := RunVCS(path, StatusTimeout, "git", "commit", "-m", message)
 	if err != nil {
 		// Nothing to commit is not a failure.
 		if strings.Contains(string(output), "nothing to commit") {
@@ -71,7 +71,7 @@ func (gitBackend) Commit(path, message string) error {
 
 // hasUpstream reports whether the current branch has an upstream configured.
 func hasUpstream(path string) bool {
-	_, err := runVCSOutput(path, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	_, err := RunVCSOutput(path, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	return err == nil
 }
 
@@ -80,7 +80,7 @@ type jjBackend struct{}
 func (jjBackend) Status(st *RepoStatus) error { return getJujutsuStatus(st) }
 
 func (jjBackend) Push(path string) error {
-	output, err := runVCS(path, networkTimeout, "jj", "git", "push", "--all")
+	output, err := RunVCS(path, NetworkTimeout, "jj", "git", "push", "--all")
 	if err != nil {
 		return fmt.Errorf("push failed: %w\n%s", err, output)
 	}
@@ -88,7 +88,7 @@ func (jjBackend) Push(path string) error {
 }
 
 func (jjBackend) Pull(path string) error {
-	output, err := runVCS(path, networkTimeout, "jj", "git", "fetch")
+	output, err := RunVCS(path, NetworkTimeout, "jj", "git", "fetch")
 	if err != nil {
 		return fmt.Errorf("fetch failed: %w\n%s", err, output)
 	}
@@ -96,9 +96,23 @@ func (jjBackend) Pull(path string) error {
 }
 
 func (jjBackend) Commit(path, message string) error {
-	output, err := runVCS(path, statusTimeout, "jj", "commit", "-m", message)
+	output, err := RunVCS(path, StatusTimeout, "jj", "commit", "-m", message)
 	if err != nil {
 		return fmt.Errorf("commit failed: %w\n%s", err, output)
 	}
 	return nil
+}
+
+// HasOrigin reports whether the repository has an origin remote.
+func HasOrigin(path string) bool {
+	output, err := RunVCSOutput(path, "git", "remote")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.TrimSpace(line) == "origin" {
+			return true
+		}
+	}
+	return false
 }

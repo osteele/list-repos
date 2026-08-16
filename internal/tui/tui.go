@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"fmt"
@@ -15,6 +15,11 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/osteele/gitsync/internal/actions"
+	"github.com/osteele/gitsync/internal/report"
+	"github.com/osteele/gitsync/internal/scan"
+	"github.com/osteele/gitsync/internal/vcs"
 )
 
 // chromeHeight is the number of lines View always spends around the repo
@@ -25,7 +30,7 @@ const chromeHeight = 4
 
 type tuiItem struct {
 	path   string
-	status *RepoStatus
+	status *vcs.RepoStatus
 	busy   bool
 	// lastResult holds the full text of the most recent action result,
 	// which is often multi-line command output worth reading in full.
@@ -52,7 +57,7 @@ func (i tuiItem) icon() string {
 	if i.status.Error != "" {
 		return "⚠️"
 	}
-	if i.status.Type == Bare {
+	if i.status.Type == vcs.Bare {
 		return "📁"
 	}
 	var badges string
@@ -75,14 +80,14 @@ func (i tuiItem) statusText() string {
 	if i.status == nil {
 		return "loading…"
 	}
-	tokens := statusTokens(i.status)
+	tokens := report.StatusTokens(i.status)
 	parts := make([]string, 0, len(tokens)+1)
 	// Failure states lead with the error itself, not the repo type.
-	if len(tokens) == 0 || (tokens[0].kind != stateError && tokens[0].kind != stateCorrupted) {
+	if len(tokens) == 0 || (tokens[0].Kind != report.StateError && tokens[0].Kind != report.StateCorrupted) {
 		parts = append(parts, i.status.Type.String())
 	}
 	for _, tok := range tokens {
-		parts = append(parts, tok.text)
+		parts = append(parts, tok.Text)
 	}
 	text := strings.Join(parts, " ")
 	if i.busy {
@@ -93,7 +98,7 @@ func (i tuiItem) statusText() string {
 
 type statusMsg struct {
 	index  int
-	status *RepoStatus
+	status *vcs.RepoStatus
 }
 
 type actionDoneMsg struct {
@@ -211,7 +216,8 @@ var defaultKeyMap = keyMap{
 	),
 }
 
-func runTUI(scanDir string) error {
+// RunTUI launches the interactive TUI over the subdirectories of scanDir.
+func RunTUI(scanDir string) error {
 	if _, err := os.Stat(scanDir); err != nil {
 		return fmt.Errorf("invalid scan directory: %w", err)
 	}
@@ -225,7 +231,7 @@ func runTUI(scanDir string) error {
 }
 
 func newModel(scanDir string) (model, error) {
-	subdirs, err := getSubdirectories(scanDir)
+	subdirs, err := scan.GetSubdirectories(scanDir)
 	if err != nil {
 		return model{}, fmt.Errorf("cannot scan %s: %w", scanDir, err)
 	}
@@ -255,13 +261,13 @@ func (m model) Init() tea.Cmd {
 
 func loadStatusCmd(index int, path string) tea.Cmd {
 	return func() tea.Msg {
-		status, err := getRepoStatus(path)
+		status, err := vcs.GetRepoStatus(path)
 		if err != nil {
 			// A scan error is not the same as corruption: keep whatever the
 			// status detection produced (including its Corrupted verdict) and
 			// surface the error without forcing the repair-dangerous state.
 			if status == nil {
-				status = &RepoStatus{Path: path, Type: Bare}
+				status = &vcs.RepoStatus{Path: path, Type: vcs.Bare}
 			}
 			if status.Error == "" {
 				status.Error = err.Error()
@@ -419,16 +425,16 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.showDetailView()
 
 	case key.Matches(msg, m.keys.Push):
-		return m.runAction("push", ActionPush)
+		return m.runAction("push", actions.ActionPush)
 
 	case key.Matches(msg, m.keys.Pull):
-		return m.runAction("pull", ActionPull)
+		return m.runAction("pull", actions.ActionPull)
 
 	case key.Matches(msg, m.keys.Commit):
 		return m.startCommit()
 
 	case key.Matches(msg, m.keys.Sync):
-		return m.runAction("sync", ActionSync)
+		return m.runAction("sync", actions.ActionSync)
 
 	case key.Matches(msg, m.keys.Repair):
 		return m.confirmRepair()
@@ -474,12 +480,12 @@ func (m model) handleCommitInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		message := strings.TrimSpace(m.commitInput.Value())
 		if message == "" {
-			message = defaultCommitMessage
+			message = actions.DefaultCommitMessage
 		}
 		m.commitInput.Blur()
 		m.commitInput.SetValue("")
 		return m.runAction("commit", func(path string) error {
-			return ActionCommit(path, message)
+			return actions.ActionCommit(path, message)
 		})
 	case tea.KeyEsc, tea.KeyCtrlC:
 		m.commitInput.Blur()
@@ -500,7 +506,7 @@ func (m model) startCommit() (tea.Model, tea.Cmd) {
 	if item.busy {
 		return m.busyMessage(item)
 	}
-	m.commitInput.SetValue(defaultCommitMessage)
+	m.commitInput.SetValue(actions.DefaultCommitMessage)
 	m.commitInput.CursorEnd()
 	return m, m.commitInput.Focus()
 }
@@ -560,14 +566,14 @@ func (m model) confirmAddRemote() (tea.Model, tea.Cmd) {
 		return m.busyMessage(item)
 	}
 	// Adding a first remote is safe; replacing an existing origin is not.
-	if !hasOrigin(item.path) {
-		mm, cmd := m.runAction("add GitHub remote", ActionAddGitHubRemote)
+	if !vcs.HasOrigin(item.path) {
+		mm, cmd := m.runAction("add GitHub remote", actions.ActionAddGitHubRemote)
 		return mm, cmd
 	}
 	m.pending = &pendingAction{
 		prompt: fmt.Sprintf("replace origin of %s with the GitHub remote? (y/n)", item.name()),
 		run: func(m model) (model, tea.Cmd) {
-			mm, cmd := m.runAction("add GitHub remote", ActionAddGitHubRemote)
+			mm, cmd := m.runAction("add GitHub remote", actions.ActionAddGitHubRemote)
 			return mm.(model), cmd
 		},
 	}
@@ -604,7 +610,7 @@ func (m model) runRepair() (model, tea.Cmd) {
 	m.items[m.cursor].busy = true
 	m.message = fmt.Sprintf("repair: %s…", item.name())
 	return m, func() tea.Msg {
-		ok, msg, err := ActionRepair(item.path)
+		ok, msg, err := actions.ActionRepair(item.path)
 		if err != nil {
 			return actionDoneMsg{
 				path:    item.path,
@@ -744,7 +750,7 @@ func (m model) View() string {
 		b.WriteString(msgStyle.Render(m.pending.prompt))
 		b.WriteString("\n\n")
 	case m.message != "":
-		b.WriteString(msgStyle.Render(firstLine(m.message)))
+		b.WriteString(msgStyle.Render(report.FirstLine(m.message)))
 		b.WriteString("\n")
 		if strings.Contains(m.message, "\n") {
 			b.WriteString(dimStyle.Render("enter for full output"))

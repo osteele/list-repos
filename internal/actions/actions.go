@@ -1,4 +1,4 @@
-package main
+package actions
 
 import (
 	"fmt"
@@ -6,31 +6,34 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/osteele/gitsync/internal/vcs"
 )
 
-const defaultCommitMessage = "Update via gitsync"
+// DefaultCommitMessage is used when no commit message is supplied.
+const DefaultCommitMessage = "Update via gitsync"
 
 // ActionPush pushes the current repository.
 func ActionPush(path string) error {
-	return backendFor(detectRepoType(path)).Push(path)
+	return vcs.BackendFor(vcs.DetectRepoType(path)).Push(path)
 }
 
 // ActionPull pulls the current repository.
 func ActionPull(path string) error {
-	return backendFor(detectRepoType(path)).Pull(path)
+	return vcs.BackendFor(vcs.DetectRepoType(path)).Pull(path)
 }
 
 // ActionCommit commits all current changes with the supplied message.
 func ActionCommit(path, message string) error {
 	if message == "" {
-		message = defaultCommitMessage
+		message = DefaultCommitMessage
 	}
-	return backendFor(detectRepoType(path)).Commit(path, message)
+	return vcs.BackendFor(vcs.DetectRepoType(path)).Commit(path, message)
 }
 
 // ActionSync pulls then pushes the current repository.
 func ActionSync(path string) error {
-	backend := backendFor(detectRepoType(path))
+	backend := vcs.BackendFor(vcs.DetectRepoType(path))
 	if err := backend.Pull(path); err != nil {
 		return fmt.Errorf("sync pull: %w", err)
 	}
@@ -43,7 +46,7 @@ func ActionSync(path string) error {
 // ActionRepair attempts to recover a corrupted Git repository.
 // It returns whether repair succeeded, a human-readable message, and any error.
 func ActionRepair(path string) (bool, string, error) {
-	if detectRepoType(path) != Git {
+	if vcs.DetectRepoType(path) != vcs.Git {
 		return false, "", fmt.Errorf("repair is only supported for Git repositories")
 	}
 
@@ -65,7 +68,7 @@ func ActionRepair(path string) (bool, string, error) {
 // ActionAddGitHubRemote finds the user's GitHub repo matching the directory name
 // and sets it as origin, creating or replacing the remote as needed.
 func ActionAddGitHubRemote(path string) error {
-	if detectRepoType(path) != Git {
+	if vcs.DetectRepoType(path) != vcs.Git {
 		return fmt.Errorf("GitHub remote setup is only supported for Git repositories")
 	}
 
@@ -74,13 +77,13 @@ func ActionAddGitHubRemote(path string) error {
 		return fmt.Errorf("GITHUB_TOKEN environment variable is required")
 	}
 
-	client := NewGitHubClient(token)
+	client := vcs.NewGitHubClient(token)
 	return actionAddGitHubRemoteWithClient(path, client)
 }
 
 // actionAddGitHubRemoteWithClient is ActionAddGitHubRemote with an injectable
 // client, so tests can point at a stub GitHub API server.
-func actionAddGitHubRemoteWithClient(path string, client *GitHubClient) error {
+func actionAddGitHubRemoteWithClient(path string, client *vcs.GitHubClient) error {
 	username, err := client.GetUsername()
 	if err != nil {
 		return fmt.Errorf("could not determine GitHub user: %w", err)
@@ -93,11 +96,11 @@ func actionAddGitHubRemoteWithClient(path string, client *GitHubClient) error {
 	}
 
 	// Remove existing origin if present.
-	if hasOrigin(path) {
-		_, _ = runVCS(path, statusTimeout, "git", "remote", "remove", "origin")
+	if vcs.HasOrigin(path) {
+		_, _ = vcs.RunVCS(path, vcs.StatusTimeout, "git", "remote", "remove", "origin")
 	}
 
-	output, err := runVCS(path, networkTimeout, "git", "remote", "add", "origin", cloneURL)
+	output, err := vcs.RunVCS(path, vcs.NetworkTimeout, "git", "remote", "add", "origin", cloneURL)
 	if err != nil {
 		return fmt.Errorf("failed to add origin: %w\n%s", err, output)
 	}
@@ -109,28 +112,15 @@ func actionAddGitHubRemoteWithClient(path string, client *GitHubClient) error {
 }
 
 func getOriginURL(path string) (string, error) {
-	output, err := runVCSOutput(path, "git", "config", "--get", "remote.origin.url")
+	output, err := vcs.RunVCSOutput(path, "git", "config", "--get", "remote.origin.url")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(output)), nil
 }
 
-func hasOrigin(path string) bool {
-	output, err := runVCSOutput(path, "git", "remote")
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(output), "\n") {
-		if strings.TrimSpace(line) == "origin" {
-			return true
-		}
-	}
-	return false
-}
-
 func currentBranch(path string) string {
-	output, err := runVCSOutput(path, "git", "branch", "--show-current")
+	output, err := vcs.RunVCSOutput(path, "git", "branch", "--show-current")
 	if err != nil {
 		return ""
 	}
@@ -142,7 +132,7 @@ func setupTracking(path, remote string) error {
 	if branch == "" {
 		return fmt.Errorf("no current branch")
 	}
-	output, err := runVCS(path, statusTimeout, "git", "branch", "-u", remote+"/"+branch)
+	output, err := vcs.RunVCS(path, vcs.StatusTimeout, "git", "branch", "-u", remote+"/"+branch)
 	if err != nil {
 		return fmt.Errorf("failed to set upstream: %w\n%s", err, output)
 	}
@@ -159,17 +149,17 @@ func recoverFromRemote(path, url string) (bool, string) {
 	}
 
 	// Re-init and re-add remote.
-	if output, err := runVCS(path, statusTimeout, "git", "init"); err != nil {
+	if output, err := vcs.RunVCS(path, vcs.StatusTimeout, "git", "init"); err != nil {
 		_ = os.Rename(backupDir, gitDir)
 		return false, fmt.Sprintf("re-init failed: %v\n%s", err, output)
 	}
 
-	if output, err := runVCS(path, statusTimeout, "git", "remote", "add", "origin", url); err != nil {
+	if output, err := vcs.RunVCS(path, vcs.StatusTimeout, "git", "remote", "add", "origin", url); err != nil {
 		_ = os.Rename(backupDir, gitDir)
 		return false, fmt.Sprintf("remote add failed: %v\n%s", err, output)
 	}
 
-	if output, err := runVCS(path, networkTimeout, "git", "fetch", "origin"); err != nil {
+	if output, err := vcs.RunVCS(path, vcs.NetworkTimeout, "git", "fetch", "origin"); err != nil {
 		_ = os.Rename(backupDir, gitDir)
 		return false, fmt.Sprintf("fetch failed: %v\n%s", err, output)
 	}
@@ -177,19 +167,19 @@ func recoverFromRemote(path, url string) (bool, string) {
 	// Try to checkout the default branch.
 	branch := "main"
 	for _, candidate := range []string{"main", "master"} {
-		if _, err := runVCS(path, statusTimeout, "git", "show-ref", "--verify", "refs/remotes/origin/"+candidate); err == nil {
+		if _, err := vcs.RunVCS(path, vcs.StatusTimeout, "git", "show-ref", "--verify", "refs/remotes/origin/"+candidate); err == nil {
 			branch = candidate
 			break
 		}
 	}
 
 	// Commit current working-tree files before switching branches so they are not lost.
-	_, _ = runVCS(path, statusTimeout, "git", "config", "user.email", "gitsync@localhost")
-	_, _ = runVCS(path, statusTimeout, "git", "config", "user.name", "gitsync")
-	_, _ = runVCS(path, statusTimeout, "git", "add", "-A")
-	_, _ = runVCS(path, statusTimeout, "git", "commit", "-m", "Save local changes before repair")
+	_, _ = vcs.RunVCS(path, vcs.StatusTimeout, "git", "config", "user.email", "gitsync@localhost")
+	_, _ = vcs.RunVCS(path, vcs.StatusTimeout, "git", "config", "user.name", "gitsync")
+	_, _ = vcs.RunVCS(path, vcs.StatusTimeout, "git", "add", "-A")
+	_, _ = vcs.RunVCS(path, vcs.StatusTimeout, "git", "commit", "-m", "Save local changes before repair")
 
-	if output, err := runVCS(path, statusTimeout, "git", "checkout", "-B", branch, "origin/"+branch); err != nil {
+	if output, err := vcs.RunVCS(path, vcs.StatusTimeout, "git", "checkout", "-B", branch, "origin/"+branch); err != nil {
 		_ = os.Rename(backupDir, gitDir)
 		return false, fmt.Sprintf("checkout failed: %v\n%s", err, output)
 	}
@@ -205,14 +195,14 @@ type repairStep struct {
 
 func attemptLocalRepair(path string) (bool, string) {
 	steps := []repairStep{
-		{statusTimeout, []string{"fsck", "--full"}},
-		{statusTimeout, []string{"update-ref", "HEAD", "HEAD"}},
+		{vcs.StatusTimeout, []string{"fsck", "--full"}},
+		{vcs.StatusTimeout, []string{"update-ref", "HEAD", "HEAD"}},
 	}
-	if hasOrigin(path) {
-		steps = append(steps, repairStep{networkTimeout, []string{"fetch", "origin"}})
+	if vcs.HasOrigin(path) {
+		steps = append(steps, repairStep{vcs.NetworkTimeout, []string{"fetch", "origin"}})
 	}
 	for _, step := range steps {
-		if output, err := runVCS(path, step.timeout, "git", step.args...); err != nil {
+		if output, err := vcs.RunVCS(path, step.timeout, "git", step.args...); err != nil {
 			return false, fmt.Sprintf("local repair step %q failed: %v\n%s", step.args, err, output)
 		}
 	}

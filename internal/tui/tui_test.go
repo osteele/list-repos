@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"fmt"
@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/osteele/gitsync/internal/actions"
+	"github.com/osteele/gitsync/internal/vcs"
 )
 
 func TestTUIModelInit(t *testing.T) {
@@ -80,7 +83,7 @@ func TestTUIStatusMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, _ := m.Update(statusMsg{index: 0, status: &RepoStatus{Path: tmpDir, Type: Bare}})
+	updated, _ := m.Update(statusMsg{index: 0, status: &vcs.RepoStatus{Path: tmpDir, Type: vcs.Bare}})
 	um := updated.(model)
 	if um.items[0].status == nil {
 		t.Fatal("expected status to be set")
@@ -88,7 +91,7 @@ func TestTUIStatusMessage(t *testing.T) {
 }
 
 func TestTUIInvalidDirectory(t *testing.T) {
-	err := runTUI("/nonexistent/path/for/gitsync")
+	err := RunTUI("/nonexistent/path/for/gitsync")
 	if err == nil {
 		t.Fatal("expected error for invalid directory")
 	}
@@ -182,7 +185,7 @@ func TestCommitInputCancels(t *testing.T) {
 	if !um.commitInput.Focused() {
 		t.Fatal("expected c to focus the commit message input")
 	}
-	if um.commitInput.Value() != defaultCommitMessage {
+	if um.commitInput.Value() != actions.DefaultCommitMessage {
 		t.Fatalf("expected the default message pre-filled, got %q", um.commitInput.Value())
 	}
 	if um.items[0].busy {
@@ -326,10 +329,10 @@ func TestViewFitsWindowHeight(t *testing.T) {
 }
 
 func TestIconCombinesBadges(t *testing.T) {
-	item := tuiItem{status: &RepoStatus{
-		Type:  Git,
+	item := tuiItem{status: &vcs.RepoStatus{
+		Type:  vcs.Git,
 		Dirty: true,
-		Ahead: Count{N: 2, Known: true},
+		Ahead: vcs.Count{N: 2, Known: true},
 	}}
 	if got := item.icon(); got != "📝⬆" {
 		t.Fatalf("expected dirty and ahead badges, got %q", got)

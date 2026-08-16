@@ -1,4 +1,4 @@
-package main
+package vcs
 
 import (
 	"os"
@@ -38,12 +38,12 @@ func TestGetDefaultDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := getDefaultDirectory()
+	result := GetDefaultDirectory()
 	// Resolve symlinks for comparison (macOS /tmp is symlinked to /private/tmp)
 	resolvedResult, _ := filepath.EvalSymlinks(result)
 	resolvedGitDir, _ := filepath.EvalSymlinks(gitDir)
 	if resolvedResult != resolvedGitDir {
-		t.Errorf("getDefaultDirectory() in git subdir = %q, expected %q", result, gitDir)
+		t.Errorf("GetDefaultDirectory() in git subdir = %q, expected %q", result, gitDir)
 	}
 
 	// Test in a jj repository
@@ -81,12 +81,12 @@ func TestGetDefaultDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result = getDefaultDirectory()
+	result = GetDefaultDirectory()
 	// Resolve symlinks for comparison (macOS /tmp is symlinked to /private/tmp)
 	resolvedResult, _ = filepath.EvalSymlinks(result)
 	resolvedJjDir, _ := filepath.EvalSymlinks(jjDir)
 	if resolvedResult != resolvedJjDir {
-		t.Errorf("getDefaultDirectory() in jj subdir = %q, expected %q", result, jjDir)
+		t.Errorf("GetDefaultDirectory() in jj subdir = %q, expected %q", result, jjDir)
 	}
 
 	// Test outside any repository
@@ -100,36 +100,9 @@ func TestGetDefaultDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result = getDefaultDirectory()
+	result = GetDefaultDirectory()
 	if result != "." {
-		t.Errorf("getDefaultDirectory() outside repo = %q, expected %q", result, ".")
-	}
-}
-
-func TestGetSubdirectories(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	// Create subdirectories
-	_ = os.Mkdir(filepath.Join(tmpDir, "dir1"), 0o755)
-	_ = os.Mkdir(filepath.Join(tmpDir, "dir2"), 0o755)
-	// Create hidden directory (should be ignored)
-	_ = os.Mkdir(filepath.Join(tmpDir, ".hidden"), 0o755)
-	// Create directory starting with _ (should be ignored)
-	_ = os.Mkdir(filepath.Join(tmpDir, "_internal"), 0o755)
-	// Create a file, which should be ignored
-	_ = os.WriteFile(filepath.Join(tmpDir, "file1"), []byte(""), 0o644)
-
-	subdirs, err := getSubdirectories(tmpDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(subdirs) != 2 {
-		t.Errorf("expected 2 subdirectories, got %d", len(subdirs))
+		t.Errorf("GetDefaultDirectory() outside repo = %q, expected %q", result, ".")
 	}
 }
 
@@ -247,7 +220,7 @@ func TestGetRepoStatus(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		status, err := getRepoStatus(tc.dir)
+		status, err := GetRepoStatus(tc.dir)
 		if err != nil {
 			t.Fatal(err)
 		}

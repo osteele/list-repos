@@ -1,13 +1,15 @@
-package main
+package query
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/osteele/gitsync/internal/vcs"
 )
 
 // Filter represents a filter expression that can match against repository status
 type Filter interface {
-	Match(status *RepoStatus) bool
+	Match(status *vcs.RepoStatus) bool
 }
 
 // ParseFilter parses a filter expression string into a Filter
@@ -35,7 +37,7 @@ func ParseFilter(expr string) (Filter, error) {
 
 type allFilter struct{}
 
-func (f *allFilter) Match(status *RepoStatus) bool {
+func (f *allFilter) Match(status *vcs.RepoStatus) bool {
 	return true
 }
 
@@ -43,7 +45,7 @@ type andFilter struct {
 	left, right Filter
 }
 
-func (f *andFilter) Match(status *RepoStatus) bool {
+func (f *andFilter) Match(status *vcs.RepoStatus) bool {
 	return f.left.Match(status) && f.right.Match(status)
 }
 
@@ -51,7 +53,7 @@ type orFilter struct {
 	left, right Filter
 }
 
-func (f *orFilter) Match(status *RepoStatus) bool {
+func (f *orFilter) Match(status *vcs.RepoStatus) bool {
 	return f.left.Match(status) || f.right.Match(status)
 }
 
@@ -59,7 +61,7 @@ type notFilter struct {
 	filter Filter
 }
 
-func (f *notFilter) Match(status *RepoStatus) bool {
+func (f *notFilter) Match(status *vcs.RepoStatus) bool {
 	return !f.filter.Match(status)
 }
 
@@ -67,62 +69,62 @@ func (f *notFilter) Match(status *RepoStatus) bool {
 
 type dirtyFilter struct{}
 
-func (f *dirtyFilter) Match(status *RepoStatus) bool {
+func (f *dirtyFilter) Match(status *vcs.RepoStatus) bool {
 	return status.Dirty
 }
 
 type cleanFilter struct{}
 
-func (f *cleanFilter) Match(status *RepoStatus) bool {
+func (f *cleanFilter) Match(status *vcs.RepoStatus) bool {
 	return !status.Dirty
 }
 
 type aheadFilter struct{}
 
-func (f *aheadFilter) Match(status *RepoStatus) bool {
+func (f *aheadFilter) Match(status *vcs.RepoStatus) bool {
 	return status.Ahead.Positive()
 }
 
 type remoteFilter struct{}
 
-func (f *remoteFilter) Match(status *RepoStatus) bool {
+func (f *remoteFilter) Match(status *vcs.RepoStatus) bool {
 	return status.Remote
 }
 
 type localFilter struct{}
 
-func (f *localFilter) Match(status *RepoStatus) bool {
+func (f *localFilter) Match(status *vcs.RepoStatus) bool {
 	return !status.Remote
 }
 
 type behindFilter struct{}
 
-func (f *behindFilter) Match(status *RepoStatus) bool {
+func (f *behindFilter) Match(status *vcs.RepoStatus) bool {
 	return status.Behind.Positive()
 }
 
 type corruptedFilter struct{}
 
-func (f *corruptedFilter) Match(status *RepoStatus) bool {
+func (f *corruptedFilter) Match(status *vcs.RepoStatus) bool {
 	return status.Corrupted
 }
 
 type gitFilter struct{}
 
-func (f *gitFilter) Match(status *RepoStatus) bool {
-	return status.Type == Git
+func (f *gitFilter) Match(status *vcs.RepoStatus) bool {
+	return status.Type == vcs.Git
 }
 
 type jjFilter struct{}
 
-func (f *jjFilter) Match(status *RepoStatus) bool {
-	return status.Type == Jujutsu
+func (f *jjFilter) Match(status *vcs.RepoStatus) bool {
+	return status.Type == vcs.Jujutsu
 }
 
 type bareFilter struct{}
 
-func (f *bareFilter) Match(status *RepoStatus) bool {
-	return status.Type == Bare
+func (f *bareFilter) Match(status *vcs.RepoStatus) bool {
+	return status.Type == vcs.Bare
 }
 
 // Parser

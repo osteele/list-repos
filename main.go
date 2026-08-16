@@ -4,6 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+
+	"github.com/osteele/gitsync/internal/query"
+	"github.com/osteele/gitsync/internal/report"
+	"github.com/osteele/gitsync/internal/scan"
+	"github.com/osteele/gitsync/internal/tui"
+	"github.com/osteele/gitsync/internal/vcs"
 )
 
 func main() {
@@ -23,34 +29,34 @@ func main() {
 	if len(args) > 0 {
 		scanDir = args[0]
 	} else {
-		scanDir = getDefaultDirectory()
+		scanDir = vcs.GetDefaultDirectory()
 	}
 
 	if *interactive {
-		if err := runTUI(scanDir); err != nil {
+		if err := tui.RunTUI(scanDir); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
 
-	subdirs, err := getSubdirectories(scanDir)
+	subdirs, err := scan.GetSubdirectories(scanDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	results := processSubdirectoriesParallel(subdirs)
+	results := scan.ProcessSubdirectoriesParallel(subdirs)
 
 	filterGiven := *filterExpr != ""
 	if filterGiven {
-		filter, err := ParseFilter(*filterExpr)
+		filter, err := query.ParseFilter(*filterExpr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error parsing filter: %v\n", err)
 			os.Exit(2)
 		}
 
-		var filtered []*RepoStatus
+		var filtered []*vcs.RepoStatus
 		for _, status := range results {
 			if filter.Match(status) {
 				filtered = append(filtered, status)
@@ -59,14 +65,14 @@ func main() {
 		results = filtered
 	}
 
-	sortKeys, err := ParseSort(*sortExpr)
+	sortKeys, err := query.ParseSort(*sortExpr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error parsing sort expression: %v\n", err)
 		os.Exit(2)
 	}
-	SortResults(results, sortKeys)
+	query.SortResults(results, sortKeys)
 
-	visible, hiddenBare := prepareDisplay(results, *showAll)
-	printReport(os.Stdout, visible, hiddenBare, useColor(os.Stdout))
-	os.Exit(filterExitCode(filterGiven, len(results)))
+	visible, hiddenBare := report.PrepareDisplay(results, *showAll)
+	report.PrintReport(os.Stdout, visible, hiddenBare, report.UseColor(os.Stdout))
+	os.Exit(report.FilterExitCode(filterGiven, len(results)))
 }

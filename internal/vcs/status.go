@@ -1,21 +1,23 @@
-package main
+package vcs
 
 import (
 	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 )
 
+// RepoType classifies a directory as a non-repo, Git repo, or Jujutsu repo.
 type RepoType int
 
 const (
+	// Bare is a directory that is neither a Git nor a Jujutsu repository.
 	Bare RepoType = iota
+	// Git is a Git repository.
 	Git
+	// Jujutsu is a Jujutsu repository.
 	Jujutsu
 )
 
@@ -44,6 +46,7 @@ func (c Count) Positive() bool {
 	return c.Known && c.N > 0
 }
 
+// RepoStatus is the collected VCS status for one directory.
 type RepoStatus struct {
 	Path      string
 	Type      RepoType
@@ -55,15 +58,12 @@ type RepoStatus struct {
 	Error     string
 }
 
-type repoResult struct {
-	path   string
-	status *RepoStatus
-	err    error
-}
-
-func getDefaultDirectory() string {
+// GetDefaultDirectory returns the repository root to scan when no directory is
+// given on the command line. It prefers a Jujutsu root over a Git root and
+// falls back to the current directory.
+func GetDefaultDirectory() string {
 	// Try jj root first (since jj repos often have .git too)
-	output, err := runVCSOutput(".", "jj", "root")
+	output, err := RunVCSOutput(".", "jj", "root")
 	if err == nil {
 		root := strings.TrimSpace(string(output))
 		if root != "" {
@@ -72,7 +72,7 @@ func getDefaultDirectory() string {
 	}
 
 	// Try git root
-	output, err = runVCSOutput(".", "git", "rev-parse", "--show-toplevel")
+	output, err = RunVCSOutput(".", "git", "rev-parse", "--show-toplevel")
 	if err == nil {
 		root := strings.TrimSpace(string(output))
 		if root != "" {
@@ -84,100 +84,9 @@ func getDefaultDirectory() string {
 	return "."
 }
 
-func processSubdirectoriesParallel(subdirs []string) []*RepoStatus {
-	if len(subdirs) == 0 {
-		return nil
-	}
-
-	workerCount := runtime.NumCPU()
-	if workerCount < 1 {
-		workerCount = 1
-	}
-	if len(subdirs) < workerCount {
-		workerCount = len(subdirs)
-	}
-
-	jobs := make(chan string, len(subdirs))
-	resultChan := make(chan repoResult, len(subdirs))
-
-	var wg sync.WaitGroup
-	wg.Add(workerCount)
-	for i := 0; i < workerCount; i++ {
-		go func() {
-			defer wg.Done()
-			for dir := range jobs {
-				status, err := getRepoStatus(dir)
-				resultChan <- repoResult{path: dir, status: status, err: err}
-			}
-		}()
-	}
-
-	for _, subdir := range subdirs {
-		jobs <- subdir
-	}
-	close(jobs)
-
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	var results []*RepoStatus
-	var errorCount int
-	for result := range resultChan {
-		if result.err != nil {
-			errorCount++
-			// Errored repos still get a row: a repo that cannot be scanned
-			// is exactly the one the user needs to see. Corrupted stays
-			// whatever damage detection found; a plain error is not damage.
-			status := result.status
-			if status == nil {
-				status = &RepoStatus{Path: result.path, Type: Bare}
-			}
-			if status.Error == "" {
-				status.Error = result.err.Error()
-			}
-			results = append(results, status)
-		} else if result.status != nil {
-			results = append(results, result.status)
-		}
-	}
-
-	if errorCount > 0 {
-		fmt.Fprintf(os.Stderr, "warning: %d repositor%s could not be processed\n", errorCount, func() string {
-			if errorCount == 1 {
-				return "y"
-			}
-			return "ies"
-		}())
-	}
-
-	return results
-}
-
-func getSubdirectories(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	var subdirs []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			name := entry.Name()
-			// Skip hidden directories (starting with .) and directories starting with _
-			if len(name) > 0 && (name[0] == '.' || name[0] == '_') {
-				continue
-			}
-			subdirs = append(subdirs, filepath.Join(dir, name))
-		}
-	}
-	return subdirs, nil
-}
-
-// detectRepoType stats the directory once to classify it. jj is checked
+// DetectRepoType stats the directory once to classify it. jj is checked
 // first since jj repos often have a colocated .git too.
-func detectRepoType(dir string) RepoType {
+func DetectRepoType(dir string) RepoType {
 	if _, err := os.Stat(filepath.Join(dir, ".jj")); err == nil {
 		return Jujutsu
 	}
@@ -187,15 +96,16 @@ func detectRepoType(dir string) RepoType {
 	return Bare
 }
 
-func getRepoStatus(dir string) (*RepoStatus, error) {
+// GetRepoStatus returns the status for a single directory.
+func GetRepoStatus(dir string) (*RepoStatus, error) {
 	status := &RepoStatus{
 		Path: dir,
-		Type: detectRepoType(dir),
+		Type: DetectRepoType(dir),
 	}
 	if status.Type == Bare {
 		return status, nil
 	}
-	if err := backendFor(status.Type).Status(status); err != nil {
+	if err := BackendFor(status.Type).Status(status); err != nil {
 		// Preserve corrupted repos so batch mode can surface them.
 		if status.Corrupted {
 			return status, nil
@@ -207,7 +117,7 @@ func getRepoStatus(dir string) (*RepoStatus, error) {
 
 func getGitStatus(status *RepoStatus) error {
 	// Check for uncommitted changes
-	output, err := runVCSOutput(status.Path, "git", "status", "--porcelain")
+	output, err := RunVCSOutput(status.Path, "git", "status", "--porcelain")
 	if err != nil {
 		status.Error = fmt.Sprintf("failed to get git status: %v", err)
 		status.Corrupted = detectGitDamageQuick(status.Path)
@@ -216,18 +126,18 @@ func getGitStatus(status *RepoStatus) error {
 	status.Dirty = len(output) > 0
 
 	// Check for a remote
-	output, err = runVCSOutput(status.Path, "git", "remote")
+	output, err = RunVCSOutput(status.Path, "git", "remote")
 	if err != nil {
 		return fmt.Errorf("failed to get git remote for %s: %w", status.Path, err)
 	}
 	status.Remote = len(output) > 0
 
 	// Check for ahead commits relative to the current upstream if configured
-	output, err = runVCS(status.Path, statusTimeout, "git", "rev-list", "--count", "@{u}..HEAD")
+	output, err = RunVCS(status.Path, StatusTimeout, "git", "rev-list", "--count", "@{u}..HEAD")
 	status.Ahead = parseCount(output, err)
 
 	// Check for behind commits relative to the current upstream if configured
-	output, err = runVCS(status.Path, statusTimeout, "git", "rev-list", "--count", "HEAD..@{u}")
+	output, err = RunVCS(status.Path, StatusTimeout, "git", "rev-list", "--count", "HEAD..@{u}")
 	status.Behind = parseCount(output, err)
 
 	return nil
@@ -249,7 +159,7 @@ func parseCount(output []byte, err error) Count {
 
 func getJujutsuStatus(status *RepoStatus) error {
 	// Check for working copy changes using diff --summary
-	output, err := runVCS(status.Path, statusTimeout, "jj", "diff", "--summary")
+	output, err := RunVCS(status.Path, StatusTimeout, "jj", "diff", "--summary")
 	if err != nil {
 		return fmt.Errorf("failed to get jujutsu diff for %s: %w\n%s", status.Path, err, output)
 	}
@@ -258,7 +168,7 @@ func getJujutsuStatus(status *RepoStatus) error {
 	// Check for a remote
 	// Note: This command fails for non-git-backed jj repos (created with `jj init`)
 	// We treat that as "no remote" rather than an error
-	output, err = runVCS(status.Path, statusTimeout, "jj", "git", "remote", "list")
+	output, err = RunVCS(status.Path, StatusTimeout, "jj", "git", "remote", "list")
 	if err != nil {
 		// If the command fails (e.g., no git backend), assume no remote
 		status.Remote = false
@@ -270,7 +180,7 @@ func getJujutsuStatus(status *RepoStatus) error {
 	if status.Remote {
 		// Count non-empty revisions that are not in remote bookmarks (excluding root)
 		// We exclude empty revisions as they're typically just working copies
-		output, err = runVCS(status.Path, statusTimeout, "jj", "log", "-r", "all() & ~ remote_bookmarks() & ~ root() & ~ empty()", "--no-graph", "-T", "commit_id")
+		output, err = RunVCS(status.Path, StatusTimeout, "jj", "log", "-r", "all() & ~ remote_bookmarks() & ~ root() & ~ empty()", "--no-graph", "-T", "commit_id")
 		if err != nil {
 			// If the command fails, the unpushed count is unknown
 			status.Ahead = Count{}

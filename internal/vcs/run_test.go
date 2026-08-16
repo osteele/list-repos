@@ -1,4 +1,4 @@
-package main
+package vcs
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 
 func TestRunVCSTimeout(t *testing.T) {
 	// A command that outlives its timeout must fail with a timeout error.
-	_, err := runVCS("", 100*time.Millisecond, "sleep", "2")
+	_, err := RunVCS("", 100*time.Millisecond, "sleep", "2")
 	if err == nil {
 		t.Fatal("expected a timeout error, got nil")
 	}
@@ -24,7 +24,7 @@ func TestRunVCSTimeout(t *testing.T) {
 
 func TestRunVCSEnv(t *testing.T) {
 	// Commands must run with credential prompts disabled.
-	output, err := runVCS("", statusTimeout, "sh", "-c", "echo $GIT_TERMINAL_PROMPT")
+	output, err := RunVCS("", StatusTimeout, "sh", "-c", "echo $GIT_TERMINAL_PROMPT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestRunVCSEnv(t *testing.T) {
 		t.Fatalf("expected GIT_TERMINAL_PROMPT=0, got %q", output)
 	}
 
-	output, err = runVCS("", statusTimeout, "sh", "-c", "echo $GIT_SSH_COMMAND")
+	output, err = RunVCS("", StatusTimeout, "sh", "-c", "echo $GIT_SSH_COMMAND")
 	if err != nil {
 		t.Fatal(err)
 	}

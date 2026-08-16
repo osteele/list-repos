@@ -1,15 +1,17 @@
-package main
+package query
 
 import (
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/osteele/gitsync/internal/vcs"
 )
 
 // SortKey represents a field to sort by
 type SortKey interface {
-	Compare(a, b *RepoStatus) int
+	Compare(a, b *vcs.RepoStatus) int
 }
 
 // ParseSort parses a sort expression string into a list of SortKeys
@@ -64,7 +66,7 @@ func ParseSort(expr string) ([]SortKey, error) {
 }
 
 // SortResults sorts repository statuses according to the given sort keys
-func SortResults(results []*RepoStatus, keys []SortKey) {
+func SortResults(results []*vcs.RepoStatus, keys []SortKey) {
 	sort.Slice(results, func(i, j int) bool {
 		for _, key := range keys {
 			cmp := key.Compare(results[i], results[j])
@@ -85,7 +87,7 @@ type nameSortKey struct {
 	reverse bool
 }
 
-func (k *nameSortKey) Compare(a, b *RepoStatus) int {
+func (k *nameSortKey) Compare(a, b *vcs.RepoStatus) int {
 	nameA := filepath.Base(a.Path)
 	nameB := filepath.Base(b.Path)
 
@@ -106,7 +108,7 @@ type vcsSortKey struct {
 	reverse bool
 }
 
-func (k *vcsSortKey) Compare(a, b *RepoStatus) int {
+func (k *vcsSortKey) Compare(a, b *vcs.RepoStatus) int {
 	// Sort order: Git < Jujutsu < Bare
 	result := 0
 	if a.Type < b.Type {
@@ -125,7 +127,7 @@ type dirtySortKey struct {
 	reverse bool
 }
 
-func (k *dirtySortKey) Compare(a, b *RepoStatus) int {
+func (k *dirtySortKey) Compare(a, b *vcs.RepoStatus) int {
 	// Dirty repos come first (when not reversed)
 	result := 0
 	if a.Dirty && !b.Dirty {
@@ -144,7 +146,7 @@ type aheadSortKey struct {
 	reverse bool
 }
 
-func (k *aheadSortKey) Compare(a, b *RepoStatus) int {
+func (k *aheadSortKey) Compare(a, b *vcs.RepoStatus) int {
 	// Higher ahead counts come first; unknown counts sort as 0.
 	result := 0
 	if countValue(a.Ahead) > countValue(b.Ahead) {
@@ -160,7 +162,7 @@ func (k *aheadSortKey) Compare(a, b *RepoStatus) int {
 }
 
 // countValue maps a Count to its sort value; unknown counts sort as 0.
-func countValue(c Count) int {
+func countValue(c vcs.Count) int {
 	if !c.Known {
 		return 0
 	}
@@ -171,7 +173,7 @@ type remoteSortKey struct {
 	reverse bool
 }
 
-func (k *remoteSortKey) Compare(a, b *RepoStatus) int {
+func (k *remoteSortKey) Compare(a, b *vcs.RepoStatus) int {
 	// Repos with remotes come first (when not reversed)
 	result := 0
 	if a.Remote && !b.Remote {
@@ -190,7 +192,7 @@ type behindSortKey struct {
 	reverse bool
 }
 
-func (k *behindSortKey) Compare(a, b *RepoStatus) int {
+func (k *behindSortKey) Compare(a, b *vcs.RepoStatus) int {
 	// Higher behind counts come first; unknown counts sort as 0.
 	result := 0
 	if countValue(a.Behind) > countValue(b.Behind) {

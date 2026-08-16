@@ -1,4 +1,4 @@
-package main
+package actions
 
 import (
 	"encoding/json"
@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/osteele/gitsync/internal/vcs"
 )
 
 func initGitRepo(t *testing.T, dir string) {
@@ -383,7 +385,7 @@ func TestActionAddGitHubRemote(t *testing.T) {
 	defer server.Close()
 
 	// Inject test server URL through the client by temporarily swapping the global default.
-	client := NewGitHubClient("test-token")
+	client := vcs.NewGitHubClient("test-token")
 	client.BaseURL = server.URL
 
 	if err := actionAddGitHubRemoteWithClient(tmpDir, client); err != nil {

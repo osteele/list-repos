@@ -1,8 +1,10 @@
-package main
+package query
 
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/osteele/gitsync/internal/vcs"
 )
 
 func TestParseSort(t *testing.T) {
@@ -57,11 +59,11 @@ func TestParseSortErrors(t *testing.T) {
 
 func TestSortResults(t *testing.T) {
 	// Create test data. beta's ahead count is unknown; it must sort as 0.
-	results := []*RepoStatus{
-		{Path: "/path/zebra", Type: Git, Dirty: true, Ahead: Count{N: 0, Known: true}, Remote: true},
-		{Path: "/path/alpha", Type: Jujutsu, Dirty: false, Ahead: Count{N: 1, Known: true}, Remote: false},
-		{Path: "/path/beta", Type: Bare, Dirty: false, Ahead: Count{}, Remote: false},
-		{Path: "/path/gamma", Type: Git, Dirty: true, Ahead: Count{N: 3, Known: true}, Remote: true},
+	results := []*vcs.RepoStatus{
+		{Path: "/path/zebra", Type: vcs.Git, Dirty: true, Ahead: vcs.Count{N: 0, Known: true}, Remote: true},
+		{Path: "/path/alpha", Type: vcs.Jujutsu, Dirty: false, Ahead: vcs.Count{N: 1, Known: true}, Remote: false},
+		{Path: "/path/beta", Type: vcs.Bare, Dirty: false, Ahead: vcs.Count{}, Remote: false},
+		{Path: "/path/gamma", Type: vcs.Git, Dirty: true, Ahead: vcs.Count{N: 3, Known: true}, Remote: true},
 	}
 
 	testCases := []struct {
@@ -82,7 +84,7 @@ func TestSortResults(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.expr, func(t *testing.T) {
 			// Make a copy of results for sorting
-			sortedResults := make([]*RepoStatus, len(results))
+			sortedResults := make([]*vcs.RepoStatus, len(results))
 			copy(sortedResults, results)
 
 			keys, err := ParseSort(tc.expr)
@@ -106,8 +108,8 @@ func TestSortResults(t *testing.T) {
 
 func TestSortComparison(t *testing.T) {
 	// Test individual sort key comparisons
-	a := &RepoStatus{Path: "/path/a", Type: Git, Dirty: true, Ahead: Count{N: 2, Known: true}, Remote: true}
-	b := &RepoStatus{Path: "/path/b", Type: Jujutsu, Dirty: false, Ahead: Count{N: 0, Known: true}, Remote: false}
+	a := &vcs.RepoStatus{Path: "/path/a", Type: vcs.Git, Dirty: true, Ahead: vcs.Count{N: 2, Known: true}, Remote: true}
+	b := &vcs.RepoStatus{Path: "/path/b", Type: vcs.Jujutsu, Dirty: false, Ahead: vcs.Count{N: 0, Known: true}, Remote: false}
 
 	testCases := []struct {
 		key      SortKey

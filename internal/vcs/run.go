@@ -1,4 +1,4 @@
-package main
+package vcs
 
 import (
 	"context"
@@ -10,25 +10,25 @@ import (
 )
 
 const (
-	// statusTimeout bounds local status queries that never touch the network
+	// StatusTimeout bounds local status queries that never touch the network
 	// (status --porcelain, remote, rev-list, jj diff, jj log, ...).
-	statusTimeout = 10 * time.Second
-	// networkTimeout bounds operations that talk to a remote (push, pull,
+	StatusTimeout = 10 * time.Second
+	// NetworkTimeout bounds operations that talk to a remote (push, pull,
 	// fetch, GitHub-remote setup, repair's fetch).
-	networkTimeout = 120 * time.Second
+	NetworkTimeout = 120 * time.Second
 )
 
-// runVCS runs a git/jj command in dir with a timeout and a non-interactive
+// RunVCS runs a git/jj command in dir with a timeout and a non-interactive
 // environment, returning combined output.
-func runVCS(dir string, timeout time.Duration, name string, args ...string) ([]byte, error) {
+func RunVCS(dir string, timeout time.Duration, name string, args ...string) ([]byte, error) {
 	return runVCSWith(dir, timeout, true, name, args...)
 }
 
-// runVCSOutput is like runVCS but returns stdout only, for callers that need
+// RunVCSOutput is like RunVCS but returns stdout only, for callers that need
 // Output() semantics. All such callers are local status queries, so it always
-// uses statusTimeout.
-func runVCSOutput(dir, name string, args ...string) ([]byte, error) {
-	return runVCSWith(dir, statusTimeout, false, name, args...)
+// uses StatusTimeout.
+func RunVCSOutput(dir, name string, args ...string) ([]byte, error) {
+	return runVCSWith(dir, StatusTimeout, false, name, args...)
 }
 
 func runVCSWith(dir string, timeout time.Duration, combined bool, name string, args ...string) ([]byte, error) {

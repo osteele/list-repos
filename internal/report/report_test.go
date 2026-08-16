@@ -1,37 +1,39 @@
-package main
+package report
 
 import (
 	"bytes"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/osteele/gitsync/internal/vcs"
 )
 
 func TestStatusTokens(t *testing.T) {
 	testCases := []struct {
 		name     string
-		status   *RepoStatus
-		expected []stateToken
+		status   *vcs.RepoStatus
+		expected []StateToken
 	}{
 		{
 			name:     "clean repo with remote",
-			status:   &RepoStatus{Type: Git, Remote: true, Ahead: Count{N: 0, Known: true}, Behind: Count{N: 0, Known: true}},
-			expected: []stateToken{{stateClean, "clean"}},
+			status:   &vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{N: 0, Known: true}, Behind: vcs.Count{N: 0, Known: true}},
+			expected: []StateToken{{stateClean, "clean"}},
 		},
 		{
 			name:     "dirty repo",
-			status:   &RepoStatus{Type: Git, Remote: true, Dirty: true, Ahead: Count{Known: true}},
-			expected: []stateToken{{stateDirty, "dirty"}},
+			status:   &vcs.RepoStatus{Type: vcs.Git, Remote: true, Dirty: true, Ahead: vcs.Count{Known: true}},
+			expected: []StateToken{{stateDirty, "dirty"}},
 		},
 		{
 			name:     "ahead and behind",
-			status:   &RepoStatus{Type: Git, Remote: true, Ahead: Count{N: 3, Known: true}, Behind: Count{N: 2, Known: true}},
-			expected: []stateToken{{stateAhead, "ahead 3"}, {stateBehind, "behind 2"}},
+			status:   &vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{N: 3, Known: true}, Behind: vcs.Count{N: 2, Known: true}},
+			expected: []StateToken{{stateAhead, "ahead 3"}, {stateBehind, "behind 2"}},
 		},
 		{
 			name:   "dirty ahead and behind in order",
-			status: &RepoStatus{Type: Jujutsu, Remote: true, Dirty: true, Ahead: Count{N: 1, Known: true}, Behind: Count{N: 2, Known: true}},
-			expected: []stateToken{
+			status: &vcs.RepoStatus{Type: vcs.Jujutsu, Remote: true, Dirty: true, Ahead: vcs.Count{N: 1, Known: true}, Behind: vcs.Count{N: 2, Known: true}},
+			expected: []StateToken{
 				{stateDirty, "dirty"},
 				{stateAhead, "ahead 1"},
 				{stateBehind, "behind 2"},
@@ -39,61 +41,61 @@ func TestStatusTokens(t *testing.T) {
 		},
 		{
 			name:     "ahead unknown with remote",
-			status:   &RepoStatus{Type: Git, Remote: true},
-			expected: []stateToken{{stateAheadUnknown, "ahead ?"}},
+			status:   &vcs.RepoStatus{Type: vcs.Git, Remote: true},
+			expected: []StateToken{{stateAheadUnknown, "ahead ?"}},
 		},
 		{
 			name:     "no remote",
-			status:   &RepoStatus{Type: Git},
-			expected: []stateToken{{stateNoRemote, "no remote"}},
+			status:   &vcs.RepoStatus{Type: vcs.Git},
+			expected: []StateToken{{stateNoRemote, "no remote"}},
 		},
 		{
 			name:     "dirty jj repo without remote",
-			status:   &RepoStatus{Type: Jujutsu, Dirty: true},
-			expected: []stateToken{{stateDirty, "dirty"}, {stateNoRemote, "no remote"}},
+			status:   &vcs.RepoStatus{Type: vcs.Jujutsu, Dirty: true},
+			expected: []StateToken{{stateDirty, "dirty"}, {stateNoRemote, "no remote"}},
 		},
 		{
 			name:     "error uses only the first line",
-			status:   &RepoStatus{Type: Git, Error: "failed to get git status\nfatal: not a git repository"},
-			expected: []stateToken{{stateError, "error: failed to get git status"}},
+			status:   &vcs.RepoStatus{Type: vcs.Git, Error: "failed to get git status\nfatal: not a git repository"},
+			expected: []StateToken{{StateError, "error: failed to get git status"}},
 		},
 		{
 			name:     "error crowds out other states",
-			status:   &RepoStatus{Type: Git, Remote: true, Dirty: true, Error: "boom"},
-			expected: []stateToken{{stateError, "error: boom"}},
+			status:   &vcs.RepoStatus{Type: vcs.Git, Remote: true, Dirty: true, Error: "boom"},
+			expected: []StateToken{{StateError, "error: boom"}},
 		},
 		{
 			name:     "corrupted",
-			status:   &RepoStatus{Type: Git, Corrupted: true},
-			expected: []stateToken{{stateCorrupted, "corrupted"}},
+			status:   &vcs.RepoStatus{Type: vcs.Git, Corrupted: true},
+			expected: []StateToken{{StateCorrupted, "corrupted"}},
 		},
 		{
 			name:     "corrupted with error",
-			status:   &RepoStatus{Type: Git, Corrupted: true, Error: "bad object"},
-			expected: []stateToken{{stateError, "error: bad object"}, {stateCorrupted, "corrupted"}},
+			status:   &vcs.RepoStatus{Type: vcs.Git, Corrupted: true, Error: "bad object"},
+			expected: []StateToken{{StateError, "error: bad object"}, {StateCorrupted, "corrupted"}},
 		},
 		{
 			name:     "bare directory has no status",
-			status:   &RepoStatus{Type: Bare},
+			status:   &vcs.RepoStatus{Type: vcs.Bare},
 			expected: nil,
 		},
 		{
 			name:     "bare directory with a scan error still shows the error",
-			status:   &RepoStatus{Type: Bare, Error: "permission denied"},
-			expected: []stateToken{{stateError, "error: permission denied"}},
+			status:   &vcs.RepoStatus{Type: vcs.Bare, Error: "permission denied"},
+			expected: []StateToken{{StateError, "error: permission denied"}},
 		},
 	}
 
 	for _, tc := range testCases {
-		result := statusTokens(tc.status)
+		result := StatusTokens(tc.status)
 		if !reflect.DeepEqual(result, tc.expected) {
-			t.Errorf("%s: statusTokens(%+v) = %+v, expected %+v", tc.name, tc.status, result, tc.expected)
+			t.Errorf("%s: StatusTokens(%+v) = %+v, expected %+v", tc.name, tc.status, result, tc.expected)
 		}
 	}
 }
 
 func TestStatusText(t *testing.T) {
-	dirty := &RepoStatus{Type: Git, Remote: true, Dirty: true, Ahead: Count{N: 1, Known: true}}
+	dirty := &vcs.RepoStatus{Type: vcs.Git, Remote: true, Dirty: true, Ahead: vcs.Count{N: 1, Known: true}}
 	if got := statusText(dirty, false); got != "dirty ahead 1" {
 		t.Errorf("statusText(dirty, false) = %q, expected %q", got, "dirty ahead 1")
 	}
@@ -106,59 +108,59 @@ func TestStatusText(t *testing.T) {
 		t.Errorf("statusText(dirty, true) = %q, expected ahead count in cyan", colored)
 	}
 
-	if got := statusText(&RepoStatus{Type: Git, Remote: true, Ahead: Count{Known: true}}, true); got != "\033[32mclean\033[0m" {
+	if got := statusText(&vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{Known: true}}, true); got != "\033[32mclean\033[0m" {
 		t.Errorf("statusText(clean, true) = %q, expected clean in green", got)
 	}
-	if got := statusText(&RepoStatus{Type: Git, Error: "boom"}, true); got != "\033[31merror: boom\033[0m" {
+	if got := statusText(&vcs.RepoStatus{Type: vcs.Git, Error: "boom"}, true); got != "\033[31merror: boom\033[0m" {
 		t.Errorf("statusText(error, true) = %q, expected error in red", got)
 	}
-	if got := statusText(&RepoStatus{Type: Git}, true); got != "\033[2mno remote\033[0m" {
+	if got := statusText(&vcs.RepoStatus{Type: vcs.Git}, true); got != "\033[2mno remote\033[0m" {
 		t.Errorf("statusText(no remote, true) = %q, expected no remote dimmed", got)
 	}
 }
 
 func TestSummaryLine(t *testing.T) {
-	clean := &RepoStatus{Type: Git, Remote: true, Ahead: Count{Known: true}}
+	clean := &vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{Known: true}}
 
 	testCases := []struct {
 		name       string
-		visible    []*RepoStatus
+		visible    []*vcs.RepoStatus
 		hiddenBare int
 		expected   string
 	}{
 		{
 			name:     "all clean",
-			visible:  []*RepoStatus{clean, clean},
+			visible:  []*vcs.RepoStatus{clean, clean},
 			expected: "2 repos: all clean",
 		},
 		{
 			name: "only nonzero categories, in order",
-			visible: []*RepoStatus{
-				{Type: Git, Remote: true, Dirty: true, Ahead: Count{Known: true}},
-				{Type: Git, Dirty: true},
-				{Type: Git, Remote: true, Ahead: Count{N: 2, Known: true}, Behind: Count{N: 1, Known: true}},
-				{Type: Git, Error: "boom"},
+			visible: []*vcs.RepoStatus{
+				{Type: vcs.Git, Remote: true, Dirty: true, Ahead: vcs.Count{Known: true}},
+				{Type: vcs.Git, Dirty: true},
+				{Type: vcs.Git, Remote: true, Ahead: vcs.Count{N: 2, Known: true}, Behind: vcs.Count{N: 1, Known: true}},
+				{Type: vcs.Git, Error: "boom"},
 			},
 			expected: "4 repos: 2 dirty, 1 ahead, 1 behind, 1 no remote, 1 error",
 		},
 		{
 			name:       "hidden non-repos",
-			visible:    []*RepoStatus{clean},
+			visible:    []*vcs.RepoStatus{clean},
 			hiddenBare: 3,
 			expected:   "1 repo (+3 non-repos hidden): all clean",
 		},
 		{
 			name: "bare directories shown with --all count as non-repos",
-			visible: []*RepoStatus{
-				{Type: Git, Dirty: true},
-				{Type: Bare},
-				{Type: Bare},
+			visible: []*vcs.RepoStatus{
+				{Type: vcs.Git, Dirty: true},
+				{Type: vcs.Bare},
+				{Type: vcs.Bare},
 			},
 			expected: "1 repo, 2 non-repos: 1 dirty, 1 no remote",
 		},
 		{
 			name:     "corrupted counts separately from error",
-			visible:  []*RepoStatus{{Type: Git, Corrupted: true, Error: "bad object"}},
+			visible:  []*vcs.RepoStatus{{Type: vcs.Git, Corrupted: true, Error: "bad object"}},
 			expected: "1 repo: 1 corrupted, 1 error",
 		},
 		{
@@ -191,45 +193,45 @@ func TestFilterExitCode(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := filterExitCode(tc.filterGiven, tc.matches)
+		result := FilterExitCode(tc.filterGiven, tc.matches)
 		if result != tc.expected {
-			t.Errorf("filterExitCode(%v, %d) = %d, expected %d", tc.filterGiven, tc.matches, result, tc.expected)
+			t.Errorf("FilterExitCode(%v, %d) = %d, expected %d", tc.filterGiven, tc.matches, result, tc.expected)
 		}
 	}
 }
 
 func TestPrepareDisplay(t *testing.T) {
-	repo := &RepoStatus{Type: Git}
-	bare := &RepoStatus{Type: Bare}
-	results := []*RepoStatus{repo, bare, bare}
+	repo := &vcs.RepoStatus{Type: vcs.Git}
+	bare := &vcs.RepoStatus{Type: vcs.Bare}
+	results := []*vcs.RepoStatus{repo, bare, bare}
 
-	visible, hidden := prepareDisplay(results, false)
+	visible, hidden := PrepareDisplay(results, false)
 	if len(visible) != 1 || visible[0] != repo {
-		t.Errorf("prepareDisplay(_, false) kept %d rows, expected only the repo", len(visible))
+		t.Errorf("PrepareDisplay(_, false) kept %d rows, expected only the repo", len(visible))
 	}
 	if hidden != 2 {
-		t.Errorf("prepareDisplay(_, false) hid %d bare dirs, expected 2", hidden)
+		t.Errorf("PrepareDisplay(_, false) hid %d bare dirs, expected 2", hidden)
 	}
 
-	visible, hidden = prepareDisplay(results, true)
+	visible, hidden = PrepareDisplay(results, true)
 	if len(visible) != 3 {
-		t.Errorf("prepareDisplay(_, true) kept %d rows, expected all 3", len(visible))
+		t.Errorf("PrepareDisplay(_, true) kept %d rows, expected all 3", len(visible))
 	}
 	if hidden != 0 {
-		t.Errorf("prepareDisplay(_, true) reported %d hidden, expected 0", hidden)
+		t.Errorf("PrepareDisplay(_, true) reported %d hidden, expected 0", hidden)
 	}
 }
 
 func TestPrintReport(t *testing.T) {
 	longName := "a-repository-name-well-over-thirty-characters-long"
-	visible := []*RepoStatus{
-		{Path: "/tmp/scan/" + longName, Type: Git, Remote: true, Ahead: Count{Known: true}},
-		{Path: "/tmp/scan/todo", Type: Git, Remote: true, Dirty: true, Ahead: Count{N: 2, Known: true}},
-		{Path: "/tmp/scan/junk", Type: Bare},
+	visible := []*vcs.RepoStatus{
+		{Path: "/tmp/scan/" + longName, Type: vcs.Git, Remote: true, Ahead: vcs.Count{Known: true}},
+		{Path: "/tmp/scan/todo", Type: vcs.Git, Remote: true, Dirty: true, Ahead: vcs.Count{N: 2, Known: true}},
+		{Path: "/tmp/scan/junk", Type: vcs.Bare},
 	}
 
 	var buf bytes.Buffer
-	printReport(&buf, visible, 0, false)
+	PrintReport(&buf, visible, 0, false)
 	output := buf.String()
 
 	if strings.Contains(output, "\033[") {
@@ -280,7 +282,7 @@ func TestPrintReport(t *testing.T) {
 	}
 
 	buf.Reset()
-	printReport(&buf, visible[:1], 0, true)
+	PrintReport(&buf, visible[:1], 0, true)
 	if !strings.Contains(buf.String(), "\033[32mclean\033[0m") {
 		t.Errorf("colored output lacks ANSI codes:\n%s", buf.String())
 	}
