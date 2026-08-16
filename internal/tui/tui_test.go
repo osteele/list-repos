@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/osteele/gitsync/internal/actions"
 	"github.com/osteele/gitsync/internal/vcs"
@@ -376,5 +379,113 @@ func TestLoadStatusErrorIsNotCorrupted(t *testing.T) {
 	}
 	if got := item.statusText(); !strings.HasPrefix(got, "error: ") {
 		t.Fatalf("expected \"error: ...\" status text, got %q", got)
+	}
+}
+
+// forceColorProfile makes lipgloss emit escape sequences even though tests
+// don't run on a TTY; without it the styling assertions below would pass
+// vacuously against unstyled output.
+func forceColorProfile(t *testing.T) {
+	t.Helper()
+	profile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(profile) })
+}
+
+// reverseVideo matches an SGR sequence that includes parameter 7.
+var reverseVideo = regexp.MustCompile("\x1b\\[(?:[0-9]+;)*7(?:;[0-9]+)*m")
+
+func TestSelectedRowUsesReverseVideo(t *testing.T) {
+	forceColorProfile(t)
+
+	m := tuiModelWithDirs(t, 3)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	um := updated.(model)
+
+	var selected, unselected []string
+	for _, line := range strings.Split(um.View(), "\n") {
+		if !strings.Contains(line, "repo0") {
+			continue
+		}
+		if strings.Contains(line, "> ") {
+			selected = append(selected, line)
+		} else {
+			unselected = append(unselected, line)
+		}
+	}
+	if len(selected) != 1 {
+		t.Fatalf("expected exactly one selected row, got %d:\n%s", len(selected), um.View())
+	}
+	if !strings.HasPrefix(selected[0], "\x1b[") {
+		t.Fatalf("expected the selected row to carry styling, got %q", selected[0])
+	}
+	if !reverseVideo.MatchString(selected[0]) {
+		t.Fatalf("expected reverse video on the selected row, got %q", selected[0])
+	}
+	// The marker stays as a non-color cue even where styling is stripped.
+	if !strings.Contains(selected[0], "> ⏱ repo00") {
+		t.Fatalf("expected the > marker on the selected row, got %q", selected[0])
+	}
+	if len(unselected) != 2 {
+		t.Fatalf("expected two unselected rows, got %d", len(unselected))
+	}
+	for _, line := range unselected {
+		if reverseVideo.MatchString(line) {
+			t.Fatalf("unselected row must not be reversed: %q", line)
+		}
+	}
+}
+
+func TestSelectedRowFitsTerminalWidth(t *testing.T) {
+	forceColorProfile(t)
+
+	const width = 60
+	m := tuiModelWithDirs(t, 3)
+	// Give the rows emoji badges and status text: inconsistent cell widths
+	// there are what could push a padded bar past the right edge.
+	for i := range m.items {
+		m.items[i].status = &vcs.RepoStatus{
+			Type:  vcs.Git,
+			Dirty: true,
+			Ahead: vcs.Count{N: 2, Known: true},
+		}
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+	um := updated.(model)
+
+	var selectedWidth int
+	for _, line := range strings.Split(um.View(), "\n") {
+		if !strings.Contains(line, "repo0") {
+			continue
+		}
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("list row is %d cells wide in a %d-cell window: %q", w, width, line)
+		}
+		if strings.Contains(line, "> ") {
+			selectedWidth = lipgloss.Width(line)
+		}
+	}
+	// The selection bar spans the full window; padding lands it exactly.
+	if selectedWidth != width {
+		t.Errorf("expected the selection bar to span %d cells, got %d", width, selectedWidth)
+	}
+}
+
+func TestNoHardcodedForegroundColors(t *testing.T) {
+	// A bare lipgloss.Color("#...") foreground is picked for one terminal
+	// theme and illegible on the other; only AdaptiveColor is allowed.
+	hardcoded := regexp.MustCompile(`Foreground\(lipgloss\.Color\("#`)
+	matches, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hardcoded.Match(data) {
+			t.Errorf("%s contains a hardcoded foreground color", path)
+		}
 	}
 }

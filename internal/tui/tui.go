@@ -698,9 +698,12 @@ func (m model) View() string {
 	}
 
 	var b strings.Builder
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA"))
-	cursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00D8FF"))
-	msgStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F1C40F"))
+	// Theme-proof styling: no fixed foreground colors. The title is bold
+	// against the default foreground, and selection is reverse video, which
+	// is maximally contrasting on both dark and light terminals.
+	titleStyle := lipgloss.NewStyle().Bold(true)
+	selectedStyle := lipgloss.NewStyle().Reverse(true).Bold(true)
+	msgStyle := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#F1C40F"})
 	dimStyle := lipgloss.NewStyle().Faint(true)
 
 	title := "gitsync: " + m.scanDir
@@ -726,7 +729,14 @@ func (m model) View() string {
 			item := m.items[i]
 			line := fmt.Sprintf("%s %s  %s", item.icon(), item.name(), item.statusText())
 			if i == m.cursor {
-				line = cursorStyle.Render("> " + line)
+				line = "> " + line
+				// Pad the bar to the full width so the reversed selection
+				// reads as a band. lipgloss.Width measures in cells, so wide
+				// emoji badges don't push the line past the right edge.
+				if pad := m.width - lipgloss.Width(line); pad > 0 {
+					line += strings.Repeat(" ", pad)
+				}
+				line = selectedStyle.Render(line)
 			} else {
 				line = "  " + line
 			}
