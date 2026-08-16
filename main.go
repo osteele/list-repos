@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/osteele/gitsync/internal/actions"
 	"github.com/osteele/gitsync/internal/query"
 	"github.com/osteele/gitsync/internal/report"
 	"github.com/osteele/gitsync/internal/scan"
@@ -23,7 +24,29 @@ type options struct {
 	showAll     bool
 	recursive   bool
 	depth       int
+	commitAll   bool
+	pullAll     bool
+	pushAll     bool
+	syncAll     bool
+	dryRun      bool
+	yes         bool
 	scanDir     string
+}
+
+// bulkOp returns the requested bulk operation and whether one was given.
+func (opts options) bulkOp() (actions.BulkOp, bool) {
+	switch {
+	case opts.commitAll:
+		return actions.BulkCommit, true
+	case opts.pullAll:
+		return actions.BulkPull, true
+	case opts.pushAll:
+		return actions.BulkPush, true
+	case opts.syncAll:
+		return actions.BulkSync, true
+	default:
+		return 0, false
+	}
 }
 
 // parseArgs parses argv (excluding the program name) into options. The flag
@@ -46,6 +69,13 @@ func parseArgs(argv []string, stderr io.Writer) (options, error) {
 	fs.BoolVar(&opts.recursive, "recursive", false, "Descend into non-repository directories to find nested repositories")
 	fs.BoolVar(&opts.recursive, "r", false, "Descend into non-repository directories (short form)")
 	fs.IntVar(&opts.depth, "depth", 4, "Cap recursive descent at this many levels (implies -r)")
+	fs.BoolVar(&opts.commitAll, "commit-all", false, "Commit every dirty repository with an AI-generated message")
+	fs.BoolVar(&opts.pullAll, "pull-all", false, "Pull every repository that is or may be behind")
+	fs.BoolVar(&opts.pushAll, "push-all", false, "Push every repository with unpushed commits")
+	fs.BoolVar(&opts.syncAll, "sync-all", false, "Sync (pull then push) every eligible repository")
+	fs.BoolVar(&opts.dryRun, "dry-run", false, "Print the bulk plan without acting or prompting")
+	fs.BoolVar(&opts.yes, "yes", false, "Skip the bulk confirmation prompt")
+	fs.BoolVar(&opts.yes, "y", false, "Skip the bulk confirmation prompt (short form)")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "Usage: gitsync [flags] [DIR]\n\n")
 		_, _ = fmt.Fprintf(fs.Output(), "DIR defaults to the repository root or current directory.\n\nFlags:\n")
@@ -81,6 +111,24 @@ func parseArgs(argv []string, stderr io.Writer) (options, error) {
 	})
 	if opts.depth < 1 {
 		err := fmt.Errorf("depth must be at least 1, got %d", opts.depth)
+		_, _ = fmt.Fprintf(fs.Output(), "gitsync: %v\n", err)
+		return options{}, err
+	}
+	// The bulk operations are mutually exclusive with each other and with
+	// the interactive TUI.
+	bulkCount := 0
+	for _, b := range []bool{opts.commitAll, opts.pullAll, opts.pushAll, opts.syncAll} {
+		if b {
+			bulkCount++
+		}
+	}
+	if bulkCount > 1 {
+		err := fmt.Errorf("--commit-all, --pull-all, --push-all, and --sync-all are mutually exclusive")
+		_, _ = fmt.Fprintf(fs.Output(), "gitsync: %v\n", err)
+		return options{}, err
+	}
+	if bulkCount > 0 && opts.interactive {
+		err := fmt.Errorf("bulk operations cannot be combined with -i")
 		_, _ = fmt.Fprintf(fs.Output(), "gitsync: %v\n", err)
 		return options{}, err
 	}
@@ -169,6 +217,10 @@ func main() {
 		os.Exit(2)
 	}
 	query.SortResults(results, sortKeys)
+
+	if op, ok := opts.bulkOp(); ok {
+		os.Exit(runBulk(op, results, opts.dryRun, opts.yes, os.Stdin, os.Stdout, os.Stderr))
+	}
 
 	visible, hiddenBare := report.PrepareDisplay(results, opts.showAll)
 	report.PrintReport(os.Stdout, visible, hiddenBare, report.UseColor(os.Stdout))

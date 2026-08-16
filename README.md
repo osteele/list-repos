@@ -145,6 +145,40 @@ gitsync -r --depth 3 ~/code
 
 Descent stops as soon as a repository is found, so only the outermost repositories are reported — never a repo nested inside another repo. Directories that contain repositories are listed with their children indented beneath them. Hidden directories (`.`/`_` prefix) and heavy build directories (`node_modules`, `vendor`, `target`, `build`, `dist`, `venv`) are never descended into.
 
+### Bulk Operations
+
+Four flags act on every *eligible* repository in scope at once — exactly the set the equivalent listing command would print, so they compose with `--filter`, `--sort`, `-r`/`--depth`, and the positional directory:
+
+| Flag | Acts on |
+|------|---------|
+| `--commit-all` | Dirty repositories |
+| `--pull-all` | Repositories with a remote that are behind — or whose behind count is unknown, so a fetch is worthwhile |
+| `--push-all` | Repositories with a remote and known unpushed commits |
+| `--sync-all` | Repositories eligible for pull or push |
+
+The flags are mutually exclusive with each other and with `-i`.
+
+Every bulk run is plan-first:
+
+```
+$ gitsync --push-all
+Will push 3 repositories:
+  agent-mail      ahead 1
+  claude-wrapper  ahead 2
+  nib             ahead 1
+Proceed? [y/N]
+```
+
+- The plan prints before anything happens, then `Proceed? [y/N]` must be answered with `y` or `yes`; anything else aborts.
+- `--dry-run` stops after the plan and exits 0 without prompting. For `--commit-all` it goes one step further and passes each AI tool's own `--dry-run` flag, so you see the commit messages that would be used.
+- `-y` / `--yes` skips the prompt, for scripts and cron. `--dry-run` wins over `--yes`.
+- If stdin is not a terminal and neither `--yes` nor `--dry-run` was given, the run refuses: it prints the plan, explains that confirmation is impossible non-interactively, and exits 2. It never silently proceeds in a pipeline.
+- If nothing is eligible it prints e.g. `Nothing to push.` and exits 0.
+
+Repositories run concurrently through a bounded worker pool, one result line streams out per repository as it finishes (`✓ agent-mail  pushed` / `✗ nib  push failed: …`), and a summary follows (`2 pushed, 1 failed: nib`). A failure in one repository does not abort the others. Exit codes: `0` when all succeeded (or nothing was eligible), `1` when any repository failed, `2` for usage errors and refusals.
+
+`--commit-all` never reuses the single-repo canned message. It requires `git-ai-commit` (for Git repositories) and `jj-ai-commit` (for Jujutsu repositories) on `PATH`, which generate a conventional-commit message from the diff. Before prompting, gitsync checks that the tools the eligible set actually needs are available; if one is missing it refuses — naming the tool and the affected repositories — and exits 2, rather than partially proceeding.
+
 ### Interactive TUI
 
 Launch the interactive terminal UI with `-i` or `--interactive`:
@@ -164,6 +198,10 @@ In the TUI you can navigate the directory tree with `↑`/`↓` (or `k`/`j`) and
 | `u` | Pull (Git) / fetch (Jujutsu) |
 | `c` | Commit all changes; opens a prompt for the message |
 | `s` | Sync (pull then push) |
+| `P` | Push all eligible repositories in scope (asks to confirm) |
+| `U` | Pull all eligible repositories in scope (asks to confirm) |
+| `C` | Commit all dirty repositories with AI-generated messages (asks to confirm) |
+| `S` | Sync all eligible repositories in scope (asks to confirm) |
 | `r` | Repair a corrupted Git repository (asks to confirm) |
 | `a` | Add `origin` from the matching GitHub remote (asks to confirm if replacing one) |
 | `o` | Open the repository in `$EDITOR` |
@@ -174,7 +212,7 @@ In the TUI you can navigate the directory tree with `↑`/`↓` (or `k`/`j`) and
 
 Notes:
 
-- **Confirmations.** `r` and `a` are destructive — `r` moves `.git` aside and `a` can replace an existing `origin` — so they prompt for `y`/`n` first. `esc` also cancels.
+- **Confirmations.** `r` and `a` are destructive — `r` moves `.git` aside and `a` can replace an existing `origin` — so they prompt for `y`/`n` first. The shift-key bulk actions (`P`, `U`, `C`, `S`) also confirm first, showing the count and the first few names. `esc` also cancels.
 - **Commit messages.** `c` opens a one-line input pre-filled with the default message. `enter` commits, `esc` cancels.
 - **One action at a time per repository.** While an action runs, its row shows `⏳` and further keys for that repository are ignored; other repositories remain available.
 - **Failures persist.** Successful results clear after a few seconds; failures stay until the next keypress, and the full command output is available via `enter`.

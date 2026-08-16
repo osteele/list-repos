@@ -130,6 +130,22 @@ type actionDoneMsg struct {
 	failed  bool
 }
 
+// bulkResultMsg carries one finished repository from a running bulk batch;
+// ch yields the rest. bulkDoneMsg ends the batch with the final tallies.
+type bulkResultMsg struct {
+	op        actions.BulkOp
+	result    actions.Result
+	ch        <-chan actions.Result
+	succeeded int
+	failed    int
+}
+
+type bulkDoneMsg struct {
+	op        actions.BulkOp
+	succeeded int
+	failed    int
+}
+
 type clearMsg struct{}
 
 // pendingAction is a destructive action awaiting y/n confirmation.
@@ -166,6 +182,10 @@ type keyMap struct {
 	Pull      key.Binding
 	Commit    key.Binding
 	Sync      key.Binding
+	PushAll   key.Binding
+	PullAll   key.Binding
+	CommitAll key.Binding
+	SyncAll   key.Binding
 	Repair    key.Binding
 	AddRemote key.Binding
 	Open      key.Binding
@@ -182,7 +202,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Expand, k.Collapse, k.Push, k.Pull, k.Commit, k.Sync},
-		{k.Repair, k.AddRemote, k.Open, k.Reveal, k.Detail, k.Quit},
+		{k.PushAll, k.PullAll, k.CommitAll, k.SyncAll, k.Repair, k.AddRemote, k.Open, k.Reveal, k.Detail, k.Quit},
 	}
 }
 
@@ -218,6 +238,22 @@ var defaultKeyMap = keyMap{
 	Sync: key.NewBinding(
 		key.WithKeys("s"),
 		key.WithHelp("s", "sync"),
+	),
+	PushAll: key.NewBinding(
+		key.WithKeys("P"),
+		key.WithHelp("P", "push all"),
+	),
+	PullAll: key.NewBinding(
+		key.WithKeys("U"),
+		key.WithHelp("U", "pull all"),
+	),
+	CommitAll: key.NewBinding(
+		key.WithKeys("C"),
+		key.WithHelp("C", "commit all"),
+	),
+	SyncAll: key.NewBinding(
+		key.WithKeys("S"),
+		key.WithHelp("S", "sync all"),
 	),
 	Repair: key.NewBinding(
 		key.WithKeys("r"),
@@ -445,6 +481,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case bulkResultMsg:
+		var cmds []tea.Cmd
+		if idx := m.findByPath(msg.result.Item.Status.Path); idx >= 0 {
+			m.items[idx].busy = false
+			name := m.items[idx].name()
+			if msg.result.Err != nil {
+				m.items[idx].lastResult = fmt.Sprintf("%s %s failed: %v", msg.op, name, msg.result.Err)
+			} else {
+				m.items[idx].lastResult = fmt.Sprintf("%s %s done", msg.op, name)
+			}
+			cmds = append(cmds, refreshStatusCmd(m.items[idx].path))
+		}
+		succeeded, failed := msg.succeeded, msg.failed
+		if msg.result.Err != nil {
+			failed++
+		} else {
+			succeeded++
+		}
+		cmds = append(cmds, awaitBulkResult(msg.op, msg.ch, succeeded, failed))
+		return m, tea.Batch(cmds...)
+
+	case bulkDoneMsg:
+		summary := fmt.Sprintf("%s: %d %s, %d failed", msg.op, msg.succeeded, msg.op.PastTense(), msg.failed)
+		m.message = summary
+		m.messageSticky = msg.failed > 0
+		if msg.failed == 0 {
+			return m, clearAfter(3 * time.Second)
+		}
+		return m, nil
+
 	case clearMsg:
 		if !m.messageSticky {
 			m.message = ""
@@ -519,6 +585,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Sync):
 		return m.runAction("sync", actions.ActionSync)
+
+	case key.Matches(msg, m.keys.PushAll):
+		return m.startBulk(actions.BulkPush)
+
+	case key.Matches(msg, m.keys.PullAll):
+		return m.startBulk(actions.BulkPull)
+
+	case key.Matches(msg, m.keys.CommitAll):
+		return m.startBulk(actions.BulkCommit)
+
+	case key.Matches(msg, m.keys.SyncAll):
+		return m.startBulk(actions.BulkSync)
 
 	case key.Matches(msg, m.keys.Repair):
 		return m.confirmRepair()
@@ -726,6 +804,76 @@ func (m model) runAction(name string, fn func(string) error) (tea.Model, tea.Cmd
 			}
 		}
 		return actionDoneMsg{path: item.path, message: fmt.Sprintf("%s %s done", name, item.name())}
+	}
+}
+
+// startBulk plans a bulk operation over every eligible repository currently
+// in scope and asks for confirmation, showing the count and the first few
+// names. An empty plan just reports that there is nothing to do.
+func (m model) startBulk(op actions.BulkOp) (tea.Model, tea.Cmd) {
+	var statuses []*vcs.RepoStatus
+	for _, item := range m.items {
+		if item.status != nil {
+			statuses = append(statuses, item.status)
+		}
+	}
+	items := actions.Plan(op, statuses)
+	if len(items) == 0 {
+		m.message = actions.EmptyMessage(op)
+		return m, clearAfter(2 * time.Second)
+	}
+	if op == actions.BulkCommit {
+		if err := actions.PreflightCommitTools(items); err != nil {
+			m.message = err.Error()
+			m.messageSticky = true
+			return m, nil
+		}
+	}
+	const showNames = 3
+	names := make([]string, 0, showNames+1)
+	for i, item := range items {
+		if i == showNames {
+			names = append(names, "…")
+			break
+		}
+		names = append(names, filepath.Base(item.Status.Path))
+	}
+	noun := "repositories"
+	if len(items) == 1 {
+		noun = "repository"
+	}
+	m.pending = &pendingAction{
+		prompt: fmt.Sprintf("%s %d %s (%s)? (y/n)", op, len(items), noun, strings.Join(names, ", ")),
+		run:    func(m model) (model, tea.Cmd) { return m.runBulk(op, items) },
+	}
+	return m, nil
+}
+
+// runBulk marks every planned repository busy and starts the batch. The
+// engine runs in a goroutine feeding a channel; awaitBulkResult turns each
+// result into a message so rows refresh as they finish.
+func (m model) runBulk(op actions.BulkOp, items []actions.PlanItem) (model, tea.Cmd) {
+	for _, item := range items {
+		if idx := m.findByPath(item.Status.Path); idx >= 0 {
+			m.items[idx].busy = true
+		}
+	}
+	ch := make(chan actions.Result, len(items))
+	go func() {
+		actions.ExecuteBulk(op, items, false, func(r actions.Result) { ch <- r })
+		close(ch)
+	}()
+	m.message = fmt.Sprintf("%s %d repositories…", op, len(items))
+	return m, awaitBulkResult(op, ch, 0, 0)
+}
+
+func awaitBulkResult(op actions.BulkOp, ch <-chan actions.Result, succeeded, failed int) tea.Cmd {
+	return func() tea.Msg {
+		r, ok := <-ch
+		if !ok {
+			return bulkDoneMsg{op: op, succeeded: succeeded, failed: failed}
+		}
+		return bulkResultMsg{op: op, result: r, ch: ch, succeeded: succeeded, failed: failed}
 	}
 }
 

@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-VCS behavior moved behind a `Backend` interface, selected once from the detected repo type (2026-08-16)
 
 ### Added
+- Bulk operations: `--commit-all`, `--pull-all`, `--push-all`, and `--sync-all` act on every eligible repository in scope, composing with `--filter`, `--sort`, `-r`/`--depth`, and the positional directory. Each run prints a plan first, asks `Proceed? [y/N]`, streams one result line per repository, exits 1 if any repository failed, and refuses (exit 2) when stdin is not a terminal without `--yes`/`--dry-run` (2026-08-16)
+- `--dry-run` stops after the bulk plan; for `--commit-all` it passes the AI commit tool's own `--dry-run` flag so the would-be messages are shown (2026-08-16)
+- `-y`/`--yes` skips the bulk confirmation prompt for scripts and cron (2026-08-16)
+- `--commit-all` requires `git-ai-commit` / `jj-ai-commit` on `PATH` and refuses (exit 2, naming the tool and affected repositories) when a needed tool is missing, instead of reusing the single-repo canned message (2026-08-16)
+- TUI: `P`/`U`/`C`/`S` run push-all/pull-all/commit-all/sync-all over the eligible repositories in scope, with a y/n confirmation showing the count and first few names, per-row busy state while the batch runs, and rows refreshing as each finishes (2026-08-16)
 - TUI: scrolling for lists longer than the window, `enter` for a detail view with full action output, and `?` for the full key list (2026-08-16)
 - TUI: confirmation prompts for repair and for replacing an existing `origin` (2026-08-16)
 - TUI: an editable commit message, pre-filled with the default (2026-08-16)
