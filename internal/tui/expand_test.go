@@ -120,8 +120,25 @@ func TestExpandRenderMarkersAndIndent(t *testing.T) {
 	if !strings.Contains(view, "▾ container") {
 		t.Fatalf("expected an expanded marker before the container name:\n%s", view)
 	}
-	if !strings.Contains(view, "  alpha") {
-		t.Fatalf("expected children indented under the container:\n%s", view)
+	// The indent leads the whole row, so a child's glyphs -- not just its
+	// name -- start right of its parent's.
+	glyphCol := func(name string) int {
+		for _, line := range strings.Split(view, "\n") {
+			plain := stripANSI(line)
+			if !strings.Contains(plain, name) {
+				continue
+			}
+			return len(plain) - len(strings.TrimLeft(plain, " >"))
+		}
+		return -1
+	}
+	parentCol, childCol := glyphCol("container"), glyphCol("alpha")
+	if parentCol < 0 || childCol < 0 {
+		t.Fatalf("expected both rows on screen:\n%s", view)
+	}
+	if childCol <= parentCol {
+		t.Fatalf("expected the child's glyphs indented past the parent's (%d vs %d):\n%s",
+			childCol, parentCol, view)
 	}
 
 	// h collapses like ←.

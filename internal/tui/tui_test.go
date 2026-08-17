@@ -708,7 +708,7 @@ func TestColumnsDoNotShiftAsStatusesArrive(t *testing.T) {
 	um := updated.(model)
 
 	before := nameColumnOffsets(t, um)
-	widthBefore := um.nameWidth()
+	widthBefore := um.prefixWidth()
 	if len(before) != 4 {
 		t.Fatalf("expected 4 rows, got %d", len(before))
 	}
@@ -721,8 +721,8 @@ func TestColumnsDoNotShiftAsStatusesArrive(t *testing.T) {
 
 	// The status column sits after the padded name, so a name width that
 	// moved would move every status with it.
-	if got, want := um.nameWidth(), widthBefore; got != want {
-		t.Errorf("name column width changed from %d to %d once statuses arrived", want, got)
+	if got, want := um.prefixWidth(), widthBefore; got != want {
+		t.Errorf("row prefix width changed from %d to %d once statuses arrived", want, got)
 	}
 
 	after := nameColumnOffsets(t, um)
@@ -773,5 +773,64 @@ func TestTotalsLineCountsItems(t *testing.T) {
 	}
 	if got := (rollup{}).itemText(1); got != "1 item" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEscHidesExpandedHelp(t *testing.T) {
+	m := tuiModelWithDirs(t, 2)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	um := updated.(model)
+	if !um.help.ShowAll {
+		t.Fatal("expected ? to expand the help")
+	}
+
+	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	um = updated.(model)
+	if um.help.ShowAll {
+		t.Fatal("expected esc to hide the expanded help")
+	}
+
+	// Esc is a dismissal only: with the help already collapsed it must not
+	// swallow the key or toggle anything back on.
+	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if updated.(model).help.ShowAll {
+		t.Fatal("esc must not re-expand the help")
+	}
+}
+
+// TestDetailColumnHoldsAcrossDepths is the regression for indenting the
+// glyphs: a child's icons shift right with the nesting, but the detail
+// column must not move with them.
+func TestDetailColumnHoldsAcrossDepths(t *testing.T) {
+	forceColorProfile(t)
+	m := tuiModelWithDirs(t, 2)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	um := updated.(model)
+	um.items[0].status = &vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{N: 1, Known: true}}
+	um.items[1].status = &vcs.RepoStatus{Type: vcs.Dir}
+	um.items[1].rolledUp = true
+	um.items[1].roll = rollup{repos: 1}
+	// A nested child, indented one level.
+	um.items = append(um.items, tuiItem{
+		path:   filepath.Join(um.items[1].path, "child"),
+		depth:  1,
+		status: &vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{N: 1, Known: true}},
+	})
+
+	var cols []int
+	for _, line := range strings.Split(um.View(), "\n") {
+		plain := stripANSI(line)
+		i := strings.Index(plain, "ahead 1")
+		if i < 0 {
+			continue
+		}
+		cols = append(cols, lipgloss.Width(plain[:i]))
+	}
+	if len(cols) != 2 {
+		t.Fatalf("expected two rows showing \"ahead 1\", got %d:\n%s", len(cols), um.View())
+	}
+	if cols[0] != cols[1] {
+		t.Fatalf("detail column moved with the indent: %d vs %d:\n%s", cols[0], cols[1], um.View())
 	}
 }

@@ -61,15 +61,6 @@ func (i tuiItem) expandable() bool {
 	return i.status != nil && i.status.Type == vcs.Dir
 }
 
-// icon renders the item's state as badges. It reports *status only* and
-// never type: a glyph column that sometimes means "this is a folder" and
-// sometimes means "this is clean" cannot be scanned, because nothing tells
-// the reader which meaning is in force. Directories therefore carry no
-// badge -- the disclosure marker already identifies them -- and the type
-// is rendered in its own column.
-//
-// Failure states stand alone; otherwise dirty and ahead/behind appear
-// together, since a repo is routinely both.
 // Status glyphs are text-presentation and exactly one cell wide. Emoji
 // render at inconsistent widths (a pencil is two cells, an arrow one), and
 // concatenating them is what made the arrow column wander and the layout
@@ -79,7 +70,7 @@ const (
 	glyphAhead     = "↑"
 	glyphBehind    = "↓"
 	glyphClean     = "✓"
-	glyphNoRemote  = "○"
+	glyphNoRemote  = "⌂"
 	glyphCorrupted = "✗"
 	glyphError     = "!"
 	glyphBusy      = "⋯"
@@ -120,8 +111,9 @@ func (i tuiItem) icon() string {
 		}
 		switch {
 		case !i.status.Remote:
-			// A repository with no remote has no copy anywhere else, so it
-			// must not borrow the everything-is-fine checkmark.
+			// Local only: the house says where the sole copy lives. It must
+			// not borrow the everything-is-fine checkmark, since nothing is
+			// backing this repository up.
 			slot[2] = glyphNoRemote
 		case slot[0] == glyphBlank && slot[1] == glyphBlank:
 			slot[2] = glyphClean
@@ -131,15 +123,20 @@ func (i tuiItem) icon() string {
 }
 
 // typeIcon is the VCS column, one fixed-width slot to the left of the
-// name. A folder reads as a container; the branch and fork glyphs stand
-// for the two version control systems.
+// name: a folder for a container, the branch key for Git, and the letter
+// j for Jujutsu.
+//
+// The two repository glyphs are deliberately from different families. A
+// second fork-shaped mark beside Git's branch reads as "some VCS squiggle"
+// at a glance and has to be looked at twice; a letterform next to line art
+// is told apart without focusing.
 func (i tuiItem) typeIcon() string {
 	if i.status == nil {
 		return glyphBlank
 	}
 	switch i.status.Type {
 	case vcs.Jujutsu:
-		return "⑂"
+		return "ⅉ"
 	case vcs.Git:
 		return "⎇"
 	default:
@@ -181,29 +178,42 @@ func (m model) total() (rollup, bool) {
 	return r, complete
 }
 
-// rowName is the name column: the disclosure marker, the nesting indent,
-// and the basename. The marker sits in a fixed slot so names line up
-// whether or not a row can expand.
-func (m model) rowName(i tuiItem) string {
-	marker := "  "
+// disclosure is the expand/collapse marker, in a fixed slot so names line
+// up whether or not a row can expand.
+func (i tuiItem) disclosure() string {
 	switch {
 	case i.expanded:
-		marker = "▾ "
+		return "▾ "
 	case i.expandable():
-		marker = "▸ "
+		return "▸ "
 	}
-	return marker + strings.Repeat("  ", i.depth) + i.name()
+	return "  "
 }
 
-// nameWidth is the width of the name column, measured across *every* row
-// rather than only the visible ones. Names are known as soon as the
-// directory is listed, so a width derived from them is stable: it cannot
-// shift when statuses arrive later or when the list scrolls, which is what
-// made the columns jump.
-func (m model) nameWidth() int {
+// rowPrefix is everything left of the detail column: the nesting indent,
+// the status slots, the type icon, the disclosure marker, and the name.
+//
+// The indent leads the whole group rather than only the name, so a child's
+// icons sit beneath its parent's and the nesting is legible from the
+// glyphs alone. The group is padded to one width across all rows, which is
+// what keeps the detail column itself from stepping right with the indent.
+func (m model) rowPrefix(i tuiItem) string {
+	return strings.Repeat("  ", i.depth) +
+		i.icon() + " " +
+		pad(i.typeIcon(), typeIconWidth) + " " +
+		i.disclosure() + i.name()
+}
+
+// prefixWidth is the width of everything left of the detail column,
+// measured across *every* row rather than only the visible ones. Its
+// inputs -- indent depth, name, and the fixed-width slots -- are all known
+// as soon as the directory is listed, so it cannot shift when statuses
+// arrive later or when the list scrolls, which is what made the columns
+// jump.
+func (m model) prefixWidth() int {
 	w := 0
 	for _, item := range m.items {
-		w = max(w, lipgloss.Width(m.rowName(item)))
+		w = max(w, lipgloss.Width(m.rowPrefix(item)))
 	}
 	return w
 }
@@ -789,6 +799,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Esc dismisses the expanded help, matching the detail view and the
+	// prompts. It is only a dismissal, so it does nothing when the help is
+	// already collapsed.
+	if msg.String() == "esc" && m.help.ShowAll {
+		m.help.ShowAll = false
+		return m, nil
+	}
+
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		return m, tea.Quit
@@ -1245,15 +1263,10 @@ func (m model) View() string {
 			b.WriteString(dimStyle.Render(fmt.Sprintf("  ↑ %d more", m.offset)))
 			b.WriteString("\n")
 		}
-		nameW := m.nameWidth()
+		prefixW := m.prefixWidth()
 		for i := m.offset; i < end; i++ {
 			item := m.items[i]
-			line := strings.TrimRight(strings.Join([]string{
-				item.icon(),
-				pad(item.typeIcon(), typeIconWidth),
-				pad(m.rowName(item), nameW),
-				item.statusText(),
-			}, " "), " ")
+			line := strings.TrimRight(pad(m.rowPrefix(item), prefixW)+" "+item.statusText(), " ")
 			if i == m.cursor {
 				line = "> " + line
 				// Pad the bar to the full width so the reversed selection
@@ -1278,10 +1291,12 @@ func (m model) View() string {
 		// scan root itself. The label sits in the name column so the
 		// figures line up with the rows above.
 		tot, complete := m.total()
-		rule := strings.Repeat("─", min(m.width, lipgloss.Width("  ")+badgeSlots+1+typeIconWidth+1+nameW+1+40))
+		rule := strings.Repeat("─", min(m.width, 2+prefixW+1+40))
 		b.WriteString(dimStyle.Render(rule))
 		b.WriteString("\n")
-		label := pad(strings.Repeat(" ", badgeSlots+1+typeIconWidth+1)+"Total", 2+badgeSlots+1+typeIconWidth+1+nameW)
+		// The label sits in the name column so the figures line up under
+		// the detail column of the rows above.
+		label := pad("  "+strings.Repeat(" ", badgeSlots+1+typeIconWidth+1+2)+"Total", 2+prefixW)
 		figures := tot.itemText(len(m.items))
 		if !complete {
 			figures += "…"

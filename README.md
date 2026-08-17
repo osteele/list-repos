@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Release](https://img.shields.io/github/v/release/osteele/gitsync?include_prereleases)](https://github.com/osteele/gitsync/releases)
 
-`gitsync` is a command-line tool that scans the immediate subdirectories of a specified path (or the current directory) and displays their version control status. It can run as a batch list or as an interactive TUI.
+`gitsync` is a command-line tool that scans a directory (or the current one) and reports the version control status of the repositories it finds. It can run as a batch list or as an interactive TUI, scan immediate subdirectories or descend recursively, and act on every repository that needs attention at once.
 
 For each subdirectory, it shows:
 
@@ -23,7 +23,9 @@ For each subdirectory, it shows:
 - **Flexible Sorting**: Sort by multiple fields in any order
 - **Smart Defaults**: Automatically detects repository root when run from within a repo
 - **Multi-VCS Support**: Works with both Git and Jujutsu repositories
+- **Bulk Operations**: Commit, pull, push, or sync every eligible repository in one plan-first, confirmed run
 - **Interactive TUI**: Navigate the directory tree and push, pull, commit, sync, repair, or add a GitHub remote
+- **Subtree Rollups**: In the TUI, a directory reports the state of the repositories beneath it, aggregated in the background
 
 
 ## Installation
@@ -108,7 +110,7 @@ Use the `--sort` or `-s` flag to control the output order:
 # Sort by name (default)
 gitsync -s name
 
-# Sort by VCS type (Bare, Git, Jujutsu)
+# Sort by VCS type (dir, git, jujutsu)
 gitsync -s vcs
 
 # Sort with dirty repositories first, then by name
@@ -207,7 +209,7 @@ In the TUI you can navigate the directory tree with `↑`/`↓` (or `k`/`j`) and
 | `o` | Open the repository in `$EDITOR` |
 | `f` | Reveal the repository in the system file manager |
 | `enter` | Show details for the selected repository, including the full output of its last action |
-| `?` | Toggle the full key list |
+| `?` | Toggle the full key list (`esc` hides it) |
 | `q` / `ctrl+c` | Quit |
 
 Notes:
@@ -217,9 +219,9 @@ Notes:
 - **One action at a time per repository.** While an action runs, its row shows `⏳` and further keys for that repository are ignored; other repositories remain available.
 - **Failures persist.** Successful results clear after a few seconds; failures stay until the next keypress, and the full command output is available via `enter`.
 - **Rollups.** A directory row reports the state of the repositories beneath it (`14 repos, 3 dirty, 8 ahead`), and a total row above the list aggregates the whole scan. Both are computed in the background: rows appear immediately with a plain count and fill in as the subtree scans land, so nothing blocks on them. Rollups are TUI-only — the batch listing stays a fast shallow scan.
-- **Columns.** Each row is `status · type · name · detail`, and every column has a width fixed by data known at listing time, so nothing shifts as background scans land. A rule and a `Total` line close the table with the item count and the aggregate.
-- **Badges.** Status occupies three fixed one-cell slots, so a glyph always appears in the same column: `●` dirty, then `↑` ahead / `↓` behind, then `✓` clean and backed up / `○` no remote / `✗` corrupted / `!` scan error / `⋯` action running. Text-presentation glyphs are used throughout because emoji render at inconsistent widths, which is what makes columns wander.
-- **Type icon.** Left of the name: `📁` a directory, `⎇` a Git repository, `⑂` a Jujutsu repository.
+- **Columns.** Each row is `status · type · name · detail`, and every column has a width fixed by data known at listing time, so nothing shifts as background scans land. The nesting indent leads the whole row, so a child's icons sit beneath its parent's while the detail column stays aligned. A rule and a `Total` line close the table with the item count and the aggregate.
+- **Badges.** Status occupies three fixed one-cell slots, so a glyph always appears in the same column: `●` dirty, then `↑` ahead / `↓` behind, then `✓` clean and backed up / `⌂` local only (no remote) / `✗` corrupted / `!` scan error / `⋯` action running. Text-presentation glyphs are used throughout because emoji render at inconsistent widths, which is what makes columns wander.
+- **Type icon.** Left of the name: `📁` a directory, `⎇` a Git repository, `ⅉ` a Jujutsu repository. The two repository glyphs are from different families on purpose — a letterform beside line art is told apart at a glance, where a second fork-shaped mark would not be.
 
 The list scrolls when there are more repositories than fit on screen, and the status of each updates in the background.
 
