@@ -44,6 +44,11 @@ type tuiItem struct {
 	// lastResult holds the full text of the most recent action result,
 	// which is often multi-line command output worth reading in full.
 	lastResult string
+	// roll aggregates the repositories beneath a container. It arrives
+	// after the row is already on screen, since computing it means scanning
+	// the whole subtree.
+	roll     rollup
+	rolledUp bool
 }
 
 func (i tuiItem) name() string {
@@ -103,6 +108,35 @@ func (i tuiItem) icon() string {
 	return "✅"
 }
 
+// total aggregates the whole scan: repositories at the top level counted
+// directly, and everything beneath a container taken from its rollup. Only
+// top-level rows are consulted, so an expanded container's children are
+// not counted twice.
+func (m model) total() (rollup, bool) {
+	var r rollup
+	complete := true
+	for _, item := range m.items {
+		if item.depth > 0 {
+			continue
+		}
+
+		if item.status == nil {
+			complete = false
+			continue
+		}
+		if item.status.Type == vcs.Dir {
+			if !item.rolledUp {
+				complete = false
+				continue
+			}
+			r = r.plus(item.roll)
+			continue
+		}
+		r = r.add(item.status)
+	}
+	return r, complete
+}
+
 // rowName is the name column: the disclosure marker, the nesting indent,
 // and the basename. The marker sits in a fixed slot so names line up
 // whether or not a row can expand.
@@ -138,6 +172,12 @@ func (i tuiItem) typeText() string {
 func (i tuiItem) statusText() string {
 	if i.status == nil {
 		return "loading…"
+	}
+	// A container's status is the state of what it holds. Until the
+	// subtree scan lands, fall back to the shallow count so the row is
+	// never blank.
+	if i.status.Type == vcs.Dir && i.rolledUp {
+		return i.roll.text()
 	}
 	tokens := report.StatusTokens(i.status)
 	parts := make([]string, 0, len(tokens))
@@ -404,6 +444,91 @@ func loadStatusCmd(path string) tea.Cmd {
 	}
 }
 
+// rollupDepth caps how deep a container's rollup looks for repositories.
+// Repositories in this tree sit up to three levels below a container, and
+// the descent stops at each repository anyway.
+const rollupDepth = 4
+
+// rollup is the aggregate state of the repositories beneath a directory.
+type rollup struct {
+	repos  int
+	dirty  int
+	ahead  int
+	behind int
+}
+
+func (r rollup) add(s *vcs.RepoStatus) rollup {
+	if s.Type == vcs.Dir {
+		return r
+	}
+	r.repos++
+	if s.Dirty {
+		r.dirty++
+	}
+	if s.Ahead.Positive() {
+		r.ahead++
+	}
+	if s.Behind.Positive() {
+		r.behind++
+	}
+	return r
+}
+
+func (r rollup) plus(o rollup) rollup {
+	return rollup{r.repos + o.repos, r.dirty + o.dirty, r.ahead + o.ahead, r.behind + o.behind}
+}
+
+// text renders the rollup for a status column: the repository count plus
+// only the states that are actually present, so a quiet subtree stays
+// quiet.
+func (r rollup) text() string {
+	if r.repos == 0 {
+		return ""
+	}
+	parts := []string{fmt.Sprintf("%d %s", r.repos, plural(r.repos, "repo"))}
+	if r.dirty > 0 {
+		parts = append(parts, fmt.Sprintf("%d dirty", r.dirty))
+	}
+	if r.ahead > 0 {
+		parts = append(parts, fmt.Sprintf("%d ahead", r.ahead))
+	}
+	if r.behind > 0 {
+		parts = append(parts, fmt.Sprintf("%d behind", r.behind))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+// rollupMsg carries a container's aggregated descendant state.
+type rollupMsg struct {
+	path string
+	r    rollup
+}
+
+// loadRollupCmd aggregates the state of every repository beneath a
+// container. This is the expensive part of the view -- it scans the whole
+// subtree -- so it runs as a background command per container and the row
+// shows its plain count until the result lands.
+func loadRollupCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		statuses, err := scan.Scan(path, scan.Options{Recursive: true, MaxDepth: rollupDepth})
+		if err != nil {
+			return rollupMsg{path: path}
+		}
+		var r rollup
+		for _, s := range statuses {
+			r = r.add(s)
+		}
+		return rollupMsg{path: path, r: r}
+	}
+}
+
 // loadChildrenCmd scans a container's immediate children through the
 // bounded-worker scanner, so expansion cost is one readdir plus one
 // bounded status pass.
@@ -427,6 +552,9 @@ func loadChildrenCmd(path string) tea.Cmd {
 // scroll indicators when the list does not fit.
 func (m model) listHeight() int {
 	reserved := chromeHeight
+	if tot, _ := m.total(); tot.repos > 0 {
+		reserved++ // the total row above the list
+	}
 	switch {
 	case m.commitInput.Focused():
 		reserved += 3
@@ -483,8 +611,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case statusMsg:
+		idx := m.findByPath(msg.path)
+		if idx < 0 {
+			return m, nil
+		}
+		m.items[idx].status = msg.status
+		// A container's rollup can only start once its type is known.
+		if msg.status.Type == vcs.Dir && !m.items[idx].rolledUp {
+			return m, loadRollupCmd(msg.path)
+		}
+		return m, nil
+
+	case rollupMsg:
 		if idx := m.findByPath(msg.path); idx >= 0 {
-			m.items[idx].status = msg.status
+			m.items[idx].roll = msg.r
+			m.items[idx].rolledUp = true
 		}
 		return m, nil
 
@@ -1021,6 +1162,7 @@ func (m model) View() string {
 	// against the default foreground, and selection is reverse video, which
 	// is maximally contrasting on both dark and light terminals.
 	titleStyle := lipgloss.NewStyle().Bold(true)
+	totalStyle := lipgloss.NewStyle().Bold(true)
 	selectedStyle := lipgloss.NewStyle().Reverse(true).Bold(true)
 	msgStyle := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#F1C40F"})
 	dimStyle := lipgloss.NewStyle().Faint(true)
@@ -1030,7 +1172,19 @@ func (m model) View() string {
 		title += fmt.Sprintf("  [%d/%d]", m.cursor+1, len(m.items))
 	}
 	b.WriteString(titleStyle.Render(title))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	// The total stands in for the scan root itself. It is chrome rather
+	// than a list row: it carries no indent, and the cursor never lands on
+	// it. An ellipsis marks a total still waiting on subtree scans.
+	if tot, complete := m.total(); tot.repos > 0 {
+		line := filepath.Base(m.scanDir) + "  " + tot.text()
+		if !complete {
+			line += "…"
+		}
+		b.WriteString(totalStyle.Render(line))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 
 	if len(m.items) == 0 {
 		b.WriteString("No directories found.\n")

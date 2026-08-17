@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,5 +94,57 @@ func TestProcessSubdirectoriesParallelIncludesErrored(t *testing.T) {
 	}
 	if results[0].Corrupted {
 		t.Fatal("a scan error is not corruption")
+	}
+}
+
+// TestScanWritesNothingToStderr guards the TUI: it runs on an alt screen,
+// where a stray stderr write from a background rollup scan corrupts the
+// display. Every errored directory already carries an error row, so
+// announcing a count is the caller's decision, not Scan's.
+func TestScanWritesNothingToStderr(t *testing.T) {
+	root, err := os.MkdirTemp("", "scan-stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(root) }()
+
+	// A garbage .jj directory makes the status check fail outright.
+	broken := filepath.Join(root, "broken")
+	if err := os.MkdirAll(filepath.Join(broken, ".jj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, ".jj", "garbage"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	results, scanErr := Scan(root, Options{Recursive: true, MaxDepth: 3})
+	os.Stderr = orig
+	_ = w.Close()
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatal(err)
+	}
+	if scanErr != nil {
+		t.Fatalf("scan failed: %v", scanErr)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("Scan wrote to stderr: %q", buf.String())
+	}
+	// The failure is still reported, just in the row rather than on stderr.
+	var sawError bool
+	for _, s := range results {
+		if s.Error != "" {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Fatal("expected the errored directory to carry an error row")
 	}
 }

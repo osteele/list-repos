@@ -571,3 +571,94 @@ func TestDirectoryHasNoStatusBadge(t *testing.T) {
 		t.Fatalf("type belongs in the type column, got %q", got)
 	}
 }
+
+func TestRollupText(t *testing.T) {
+	// Only states actually present appear, so a quiet subtree stays quiet.
+	cases := []struct {
+		name string
+		r    rollup
+		want string
+	}{
+		{"empty", rollup{}, ""},
+		{"clean subtree", rollup{repos: 4}, "4 repos"},
+		{"singular", rollup{repos: 1}, "1 repo"},
+		{"mixed", rollup{repos: 14, dirty: 3, ahead: 8}, "14 repos, 3 dirty, 8 ahead"},
+		{"behind too", rollup{repos: 2, behind: 1}, "2 repos, 1 behind"},
+	}
+	for _, tc := range cases {
+		if got := tc.r.text(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestContainerShowsRollupWhenItArrives(t *testing.T) {
+	m := tuiModelWithDirs(t, 1)
+	path := m.items[0].path
+
+	// Before the subtree scan lands the row falls back to the shallow
+	// count, so it is never blank.
+	updated, _ := m.Update(statusMsg{path: path, status: &vcs.RepoStatus{Path: path, Type: vcs.Dir, NestedRepos: 3}})
+	um := updated.(model)
+	if got := um.items[0].statusText(); got != "3 repos" {
+		t.Fatalf("expected the shallow count before rollup, got %q", got)
+	}
+
+	updated, _ = um.Update(rollupMsg{path: path, r: rollup{repos: 3, dirty: 2, ahead: 1}})
+	um = updated.(model)
+	if got := um.items[0].statusText(); got != "3 repos, 2 dirty, 1 ahead" {
+		t.Fatalf("expected the rollup once it arrives, got %q", got)
+	}
+}
+
+func TestStatusMsgStartsRollupForContainersOnly(t *testing.T) {
+	m := tuiModelWithDirs(t, 2)
+	// A container schedules its subtree scan...
+	_, cmd := m.Update(statusMsg{path: m.items[0].path, status: &vcs.RepoStatus{Type: vcs.Dir}})
+	if cmd == nil {
+		t.Fatal("expected a container to schedule a rollup")
+	}
+	// ...a repository has nothing to roll up.
+	_, cmd = m.Update(statusMsg{path: m.items[1].path, status: &vcs.RepoStatus{Type: vcs.Git, Remote: true}})
+	if cmd != nil {
+		t.Fatal("a repository must not schedule a rollup")
+	}
+}
+
+func TestTotalAggregatesWithoutDoubleCounting(t *testing.T) {
+	m := tuiModelWithDirs(t, 3)
+	// A plain repository, a rolled-up container, and a container whose
+	// children are also present as expanded rows.
+	m.items[0].status = &vcs.RepoStatus{Type: vcs.Git, Remote: true, Dirty: true}
+	m.items[1].status = &vcs.RepoStatus{Type: vcs.Dir}
+	m.items[1].roll = rollup{repos: 4, dirty: 1, ahead: 2}
+	m.items[1].rolledUp = true
+	m.items[2].status = &vcs.RepoStatus{Type: vcs.Dir}
+	m.items[2].roll = rollup{repos: 2, ahead: 1}
+	m.items[2].rolledUp = true
+	// An expanded child must not be counted again on top of its parent's
+	// rollup.
+	m.items = append(m.items, tuiItem{
+		path:   filepath.Join(m.items[2].path, "child"),
+		depth:  1,
+		status: &vcs.RepoStatus{Type: vcs.Git, Remote: true, Dirty: true},
+	})
+
+	tot, complete := m.total()
+	if !complete {
+		t.Fatal("expected the total to be complete")
+	}
+	want := rollup{repos: 7, dirty: 2, ahead: 3}
+	if tot != want {
+		t.Fatalf("total = %+v, want %+v", tot, want)
+	}
+}
+
+func TestTotalIsIncompleteUntilRollupsLand(t *testing.T) {
+	m := tuiModelWithDirs(t, 2)
+	m.items[0].status = &vcs.RepoStatus{Type: vcs.Git, Remote: true}
+	m.items[1].status = &vcs.RepoStatus{Type: vcs.Dir} // rollup pending
+	if _, complete := m.total(); complete {
+		t.Fatal("expected the total to report itself incomplete while a rollup is pending")
+	}
+}

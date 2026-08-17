@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-VCS behavior moved behind a `Backend` interface, selected once from the detected repo type (2026-08-16)
 
 ### Added
+- TUI: a directory row rolls up the repositories beneath it — `agent-tools  dir  14 repos, 3 dirty, 8 ahead` — computed in the background so the row shows its plain count immediately and fills in as the subtree scan lands (2026-08-16)
+- TUI: a total row above the list aggregates the whole scan, standing in for the scan root itself without an indent level; an ellipsis marks a total still waiting on subtree scans (2026-08-16)
 - Bulk operations: `--commit-all`, `--pull-all`, `--push-all`, and `--sync-all` act on every eligible repository in scope, composing with `--filter`, `--sort`, `-r`/`--depth`, and the positional directory. Each run prints a plan first, asks `Proceed? [y/N]`, streams one result line per repository, exits 1 if any repository failed, and refuses (exit 2) when stdin is not a terminal without `--yes`/`--dry-run` (2026-08-16)
 - `--dry-run` stops after the bulk plan; for `--commit-all` it passes the AI commit tool's own `--dry-run` flag so the would-be messages are shown (2026-08-16)
 - `-y`/`--yes` skips the bulk confirmation prompt for scripts and cron (2026-08-16)

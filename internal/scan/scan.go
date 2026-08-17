@@ -172,10 +172,11 @@ func Scan(root string, opts Options) ([]*vcs.RepoStatus, error) {
 		paths = append(paths, e.path)
 	}
 
-	results, errorCount := ScanDirectories(paths)
-	if errorCount > 0 {
-		warnErrors(errorCount)
-	}
+	// Scan does not announce the error count. Whether that is worth saying
+	// is the caller's decision: the TUI runs on an alt screen where a stray
+	// stderr write corrupts the display, and every errored directory
+	// already carries an error row of its own.
+	results, _ := ScanDirectories(paths)
 
 	for _, status := range results {
 		status.Depth = depths[status.Path]
