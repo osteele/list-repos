@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Handle non-git jj repos gracefully in status check (2025-11-10)
 
 ### Changed
+- TUI: status occupies three fixed one-cell slots (dirty, sync, health) instead of concatenated emoji, so a glyph always appears in the same column — previously an up arrow sat in a different place depending on whether the repository was also dirty (2026-08-16)
+- TUI: status glyphs are text-presentation (`●↑↓✓○✗`) rather than emoji, which render at inconsistent widths (2026-08-16)
+- TUI: column widths come from data known at listing time, so columns no longer shift between the initial render and the loaded one (2026-08-16)
+- TUI: the VCS type is an icon left of the name (`📁` directory, `⎇` Git, `⑂` Jujutsu), replacing the text column (2026-08-16)
+- TUI: the totals moved below the list, behind a rule, and now report the item count alongside the aggregate (2026-08-16)
 - TUI rows are width-aligned columns (badge, name, VCS, status). The badge column reports status only: a directory no longer occupies it with a folder icon, since the disclosure marker already identifies it and its type has its own column. Previously the same glyph slot meant "type" on some rows and "status" on others, so it could not be scanned (2026-08-16)
 - A clean repository with no remote shows `○` rather than `✅`; it is the one state here with no copy anywhere else, so it no longer borrows the everything-is-fine checkmark (2026-08-16)
 - Build-output directories (`node_modules`, `vendor`, `target`, `build`, `dist`, `venv`) are no longer listed at all, rather than being listed with a nested-repo count that recursion then refused to deliver (2026-08-16)

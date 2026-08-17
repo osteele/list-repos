@@ -70,43 +70,87 @@ func (i tuiItem) expandable() bool {
 //
 // Failure states stand alone; otherwise dirty and ahead/behind appear
 // together, since a repo is routinely both.
+// Status glyphs are text-presentation and exactly one cell wide. Emoji
+// render at inconsistent widths (a pencil is two cells, an arrow one), and
+// concatenating them is what made the arrow column wander and the layout
+// shift as statuses arrived.
+const (
+	glyphDirty     = "●"
+	glyphAhead     = "↑"
+	glyphBehind    = "↓"
+	glyphClean     = "✓"
+	glyphNoRemote  = "○"
+	glyphCorrupted = "✗"
+	glyphError     = "!"
+	glyphBusy      = "⋯"
+	glyphLoading   = "·"
+	glyphBlank     = " "
+)
+
+// badgeSlots is the number of fixed one-cell status slots per row.
+const badgeSlots = 3
+
+// icon renders status as three fixed slots: dirty, sync, health. Each slot
+// holds one meaning and one cell, so a glyph always appears in the same
+// column whether or not its neighbours are present. It reports status
+// only, never type -- the type has its own column.
 func (i tuiItem) icon() string {
-	if i.busy {
-		return "⏳"
+	slot := [badgeSlots]string{glyphBlank, glyphBlank, glyphBlank}
+	switch {
+	case i.busy:
+		slot[0] = glyphBusy
+	case i.status == nil:
+		slot[0] = glyphLoading
+	case i.status.Corrupted:
+		slot[2] = glyphCorrupted
+	case i.status.Error != "":
+		slot[2] = glyphError
+	case i.status.Type == vcs.Dir:
+		// A directory's state is its rollup, which the status column
+		// carries; the disclosure marker already identifies it.
+	default:
+		if i.status.Dirty {
+			slot[0] = glyphDirty
+		}
+		switch {
+		case i.status.Ahead.Positive():
+			slot[1] = glyphAhead
+		case i.status.Behind.Positive():
+			slot[1] = glyphBehind
+		}
+		switch {
+		case !i.status.Remote:
+			// A repository with no remote has no copy anywhere else, so it
+			// must not borrow the everything-is-fine checkmark.
+			slot[2] = glyphNoRemote
+		case slot[0] == glyphBlank && slot[1] == glyphBlank:
+			slot[2] = glyphClean
+		}
 	}
-	if i.status == nil {
-		return "⏱"
-	}
-	if i.status.Corrupted {
-		return "❌"
-	}
-	if i.status.Error != "" {
-		return "⚠️"
-	}
-	if i.status.Type == vcs.Dir {
-		return ""
-	}
-	var badges string
-	if i.status.Dirty {
-		badges += "📝"
-	}
-	if i.status.Ahead.Positive() {
-		badges += "⬆"
-	}
-	if i.status.Behind.Positive() {
-		badges += "⬇"
-	}
-	if badges != "" {
-		return badges
-	}
-	// A repository with no remote is not "all good" -- it is the one state
-	// here with no copy anywhere else -- so it must not borrow the
-	// everything-is-fine checkmark.
-	if !i.status.Remote {
-		return "○"
-	}
-	return "✅"
+	return strings.Join(slot[:], "")
 }
+
+// typeIcon is the VCS column, one fixed-width slot to the left of the
+// name. A folder reads as a container; the branch and fork glyphs stand
+// for the two version control systems.
+func (i tuiItem) typeIcon() string {
+	if i.status == nil {
+		return glyphBlank
+	}
+	switch i.status.Type {
+	case vcs.Jujutsu:
+		return "⑂"
+	case vcs.Git:
+		return "⎇"
+	default:
+		return "📁"
+	}
+}
+
+// typeIconWidth is the fixed width of the type column. The folder is an
+// emoji and renders two cells wide; the branch and fork glyphs render one,
+// so the column is padded to the wider of them.
+const typeIconWidth = 2
 
 // total aggregates the whole scan: repositories at the top level counted
 // directly, and everything beneath a container taken from its rollup. Only
@@ -151,20 +195,25 @@ func (m model) rowName(i tuiItem) string {
 	return marker + strings.Repeat("  ", i.depth) + i.name()
 }
 
+// nameWidth is the width of the name column, measured across *every* row
+// rather than only the visible ones. Names are known as soon as the
+// directory is listed, so a width derived from them is stable: it cannot
+// shift when statuses arrive later or when the list scrolls, which is what
+// made the columns jump.
+func (m model) nameWidth() int {
+	w := 0
+	for _, item := range m.items {
+		w = max(w, lipgloss.Width(m.rowName(item)))
+	}
+	return w
+}
+
 // pad right-pads s to w terminal cells.
 func pad(s string, w int) string {
 	if n := w - lipgloss.Width(s); n > 0 {
 		return s + strings.Repeat(" ", n)
 	}
 	return s
-}
-
-// typeText is the VCS column: git, jujutsu, or dir.
-func (i tuiItem) typeText() string {
-	if i.status == nil {
-		return ""
-	}
-	return i.status.Type.String()
 }
 
 // statusText is the status column. It excludes the repo type, which has
@@ -498,6 +547,16 @@ func (r rollup) text() string {
 	return strings.Join(parts, ", ")
 }
 
+// itemText renders the totals line: how many rows are listed, how many
+// repositories they account for, and the states worth acting on.
+func (r rollup) itemText(items int) string {
+	parts := []string{fmt.Sprintf("%d %s", items, plural(items, "item"))}
+	if t := r.text(); t != "" {
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, ", ")
+}
+
 func plural(n int, word string) string {
 	if n == 1 {
 		return word
@@ -552,8 +611,8 @@ func loadChildrenCmd(path string) tea.Cmd {
 // scroll indicators when the list does not fit.
 func (m model) listHeight() int {
 	reserved := chromeHeight
-	if tot, _ := m.total(); tot.repos > 0 {
-		reserved++ // the total row above the list
+	if len(m.items) > 0 {
+		reserved += 2 // the rule and the totals line closing the table
 	}
 	switch {
 	case m.commitInput.Focused():
@@ -1172,19 +1231,7 @@ func (m model) View() string {
 		title += fmt.Sprintf("  [%d/%d]", m.cursor+1, len(m.items))
 	}
 	b.WriteString(titleStyle.Render(title))
-	b.WriteString("\n")
-	// The total stands in for the scan root itself. It is chrome rather
-	// than a list row: it carries no indent, and the cursor never lands on
-	// it. An ellipsis marks a total still waiting on subtree scans.
-	if tot, complete := m.total(); tot.repos > 0 {
-		line := filepath.Base(m.scanDir) + "  " + tot.text()
-		if !complete {
-			line += "…"
-		}
-		b.WriteString(totalStyle.Render(line))
-		b.WriteString("\n")
-	}
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
 	if len(m.items) == 0 {
 		b.WriteString("No directories found.\n")
@@ -1198,24 +1245,13 @@ func (m model) View() string {
 			b.WriteString(dimStyle.Render(fmt.Sprintf("  ↑ %d more", m.offset)))
 			b.WriteString("\n")
 		}
-		// Column widths are measured across the visible rows so every
-		// column starts at the same screen position regardless of how wide
-		// a row's badges happen to render. lipgloss.Width counts terminal
-		// cells, which is what makes this correct for emoji.
-		badgeW, nameW, typeW := 0, 0, 0
-		for i := m.offset; i < end; i++ {
-			item := m.items[i]
-			badgeW = max(badgeW, lipgloss.Width(item.icon()))
-			nameW = max(nameW, lipgloss.Width(m.rowName(item)))
-			typeW = max(typeW, lipgloss.Width(item.typeText()))
-		}
-
+		nameW := m.nameWidth()
 		for i := m.offset; i < end; i++ {
 			item := m.items[i]
 			line := strings.TrimRight(strings.Join([]string{
-				pad(item.icon(), badgeW),
+				item.icon(),
+				pad(item.typeIcon(), typeIconWidth),
 				pad(m.rowName(item), nameW),
-				pad(item.typeText(), typeW),
 				item.statusText(),
 			}, " "), " ")
 			if i == m.cursor {
@@ -1237,6 +1273,21 @@ func (m model) View() string {
 			b.WriteString(dimStyle.Render(fmt.Sprintf("  ↓ %d more", len(m.items)-end)))
 			b.WriteString("\n")
 		}
+
+		// A rule and a totals line close the table, standing in for the
+		// scan root itself. The label sits in the name column so the
+		// figures line up with the rows above.
+		tot, complete := m.total()
+		rule := strings.Repeat("─", min(m.width, lipgloss.Width("  ")+badgeSlots+1+typeIconWidth+1+nameW+1+40))
+		b.WriteString(dimStyle.Render(rule))
+		b.WriteString("\n")
+		label := pad(strings.Repeat(" ", badgeSlots+1+typeIconWidth+1)+"Total", 2+badgeSlots+1+typeIconWidth+1+nameW)
+		figures := tot.itemText(len(m.items))
+		if !complete {
+			figures += "…"
+		}
+		b.WriteString(totalStyle.Render(label + " " + figures))
+		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")

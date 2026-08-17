@@ -337,8 +337,12 @@ func TestIconCombinesBadges(t *testing.T) {
 		Dirty: true,
 		Ahead: vcs.Count{N: 2, Known: true},
 	}}
-	if got := item.icon(); got != "📝⬆" {
+	got := item.icon()
+	if !strings.Contains(got, glyphDirty) || !strings.Contains(got, glyphAhead) {
 		t.Fatalf("expected dirty and ahead badges, got %q", got)
+	}
+	if lipgloss.Width(got) != badgeSlots {
+		t.Fatalf("badges must occupy exactly %d fixed slots, got %q", badgeSlots, got)
 	}
 }
 
@@ -374,8 +378,8 @@ func TestLoadStatusErrorIsNotCorrupted(t *testing.T) {
 	}
 
 	item := tuiItem{path: tmpDir, status: sm.status}
-	if got := item.icon(); got != "⚠️" {
-		t.Fatalf("expected warning icon for errored repo, got %q", got)
+	if got := item.icon(); !strings.Contains(got, glyphError) {
+		t.Fatalf("expected the error glyph for an errored repo, got %q", got)
 	}
 	if got := item.statusText(); !strings.HasPrefix(got, "error: ") {
 		t.Fatalf("expected \"error: ...\" status text, got %q", got)
@@ -551,11 +555,11 @@ func TestRowColumnsAlign(t *testing.T) {
 // with no copy anywhere else.
 func TestNoRemoteDoesNotGetTheCleanCheckmark(t *testing.T) {
 	noRemote := tuiItem{status: &vcs.RepoStatus{Type: vcs.Git}}
-	if got := noRemote.icon(); got == "✅" {
+	if got := noRemote.icon(); strings.Contains(got, glyphClean) {
 		t.Fatalf("a repo with no remote must not show the clean checkmark, got %q", got)
 	}
 	backedUp := tuiItem{status: &vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{Known: true}}}
-	if got := backedUp.icon(); got != "✅" {
+	if got := backedUp.icon(); !strings.Contains(got, glyphClean) {
 		t.Fatalf("a clean repo with a remote should show the checkmark, got %q", got)
 	}
 }
@@ -564,11 +568,11 @@ func TestNoRemoteDoesNotGetTheCleanCheckmark(t *testing.T) {
 // exists for: it reports status, never type.
 func TestDirectoryHasNoStatusBadge(t *testing.T) {
 	dir := tuiItem{status: &vcs.RepoStatus{Type: vcs.Dir, NestedRepos: 2}}
-	if got := dir.icon(); got != "" {
+	if got := strings.TrimSpace(dir.icon()); got != "" {
 		t.Fatalf("a directory must not occupy the status badge column, got %q", got)
 	}
-	if got := dir.typeText(); got != "dir" {
-		t.Fatalf("type belongs in the type column, got %q", got)
+	if got := dir.typeIcon(); got != "📁" {
+		t.Fatalf("a directory belongs in the type column, got %q", got)
 	}
 }
 
@@ -660,5 +664,114 @@ func TestTotalIsIncompleteUntilRollupsLand(t *testing.T) {
 	m.items[1].status = &vcs.RepoStatus{Type: vcs.Dir} // rollup pending
 	if _, complete := m.total(); complete {
 		t.Fatal("expected the total to report itself incomplete while a rollup is pending")
+	}
+}
+
+// nameColumnOffsets returns the screen column each row's name starts at.
+func nameColumnOffsets(t *testing.T, m model) []int {
+	t.Helper()
+	var cols []int
+	for _, line := range strings.Split(m.View(), "\n") {
+		plain := stripANSI(line)
+		// Skip the totals line, whose figures also mention "repos".
+		if strings.Contains(plain, "Total") || !strings.Contains(plain, "repo") {
+			continue
+		}
+		cols = append(cols, lipgloss.Width(plain[:strings.Index(plain, "repo")]))
+	}
+	return cols
+}
+
+// TestColumnsDoNotShiftAsStatusesArrive is the regression for columns
+// jumping between the initial render and the loaded one. Widths must come
+// from data known at listing time, never from the badges, which change as
+// background scans land.
+func TestColumnsDoNotShiftAsStatusesArrive(t *testing.T) {
+	forceColorProfile(t)
+	// Names of differing lengths, so a width derived from any subset of
+	// the rows would differ from one derived from all of them.
+	tmpDir, err := os.MkdirTemp("", "tui-cols")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	for _, n := range []string{"repo0-x", "repo1-medium-name", "repo2-considerably-longer-name", "repo3"} {
+		if err := os.Mkdir(filepath.Join(tmpDir, n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := newModel(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	um := updated.(model)
+
+	before := nameColumnOffsets(t, um)
+	widthBefore := um.nameWidth()
+	if len(before) != 4 {
+		t.Fatalf("expected 4 rows, got %d", len(before))
+	}
+
+	// Statuses arrive with badges of every shape, plus differing types.
+	um.items[0].status = &vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{Known: true}}
+	um.items[1].status = &vcs.RepoStatus{Type: vcs.Jujutsu, Remote: true, Dirty: true, Ahead: vcs.Count{N: 3, Known: true}}
+	um.items[2].status = &vcs.RepoStatus{Type: vcs.Dir, NestedRepos: 9}
+	um.items[3].status = &vcs.RepoStatus{Type: vcs.Git, Corrupted: true}
+
+	// The status column sits after the padded name, so a name width that
+	// moved would move every status with it.
+	if got, want := um.nameWidth(), widthBefore; got != want {
+		t.Errorf("name column width changed from %d to %d once statuses arrived", want, got)
+	}
+
+	after := nameColumnOffsets(t, um)
+	for i := range after {
+		if after[i] != before[i] {
+			t.Errorf("row %d name column moved from %d to %d when its status arrived:\n%s",
+				i, before[i], after[i], um.View())
+		}
+	}
+	for i := range after {
+		if after[i] != after[0] {
+			t.Errorf("row %d name column at %d, row 0 at %d:\n%s", i, after[i], after[0], um.View())
+		}
+	}
+}
+
+// TestSyncGlyphHoldsItsColumn is the regression for the up arrows not
+// lining up: a glyph must sit in the same slot whether or not the slots
+// before it are occupied.
+func TestSyncGlyphHoldsItsColumn(t *testing.T) {
+	aheadOnly := tuiItem{status: &vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{N: 1, Known: true}}}
+	dirtyAndAhead := tuiItem{status: &vcs.RepoStatus{Type: vcs.Git, Remote: true, Dirty: true, Ahead: vcs.Count{N: 1, Known: true}}}
+
+	// Compare slot positions, not byte offsets: the glyphs are multi-byte
+	// but each occupies exactly one slot.
+	slotOf := func(badges, glyph string) int {
+		for i, r := range []rune(badges) {
+			if string(r) == glyph {
+				return i
+			}
+		}
+		return -1
+	}
+	a, b := aheadOnly.icon(), dirtyAndAhead.icon()
+	if slotOf(a, glyphAhead) != slotOf(b, glyphAhead) {
+		t.Fatalf("ahead glyph sits in slot %d of %q but slot %d of %q",
+			slotOf(a, glyphAhead), a, slotOf(b, glyphAhead), b)
+	}
+	if lipgloss.Width(a) != lipgloss.Width(b) {
+		t.Fatalf("badge columns differ in width: %q vs %q", a, b)
+	}
+}
+
+func TestTotalsLineCountsItems(t *testing.T) {
+	r := rollup{repos: 160, dirty: 71, ahead: 81}
+	if got := r.itemText(27); got != "27 items, 160 repos, 71 dirty, 81 ahead" {
+		t.Fatalf("got %q", got)
+	}
+	if got := (rollup{}).itemText(1); got != "1 item" {
+		t.Fatalf("got %q", got)
 	}
 }

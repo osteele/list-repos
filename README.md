@@ -217,8 +217,9 @@ Notes:
 - **One action at a time per repository.** While an action runs, its row shows `⏳` and further keys for that repository are ignored; other repositories remain available.
 - **Failures persist.** Successful results clear after a few seconds; failures stay until the next keypress, and the full command output is available via `enter`.
 - **Rollups.** A directory row reports the state of the repositories beneath it (`14 repos, 3 dirty, 8 ahead`), and a total row above the list aggregates the whole scan. Both are computed in the background: rows appear immediately with a plain count and fill in as the subtree scans land, so nothing blocks on them. Rollups are TUI-only — the batch listing stays a fast shallow scan.
-- **Columns.** Each row is `badge · name · VCS · status`, width-aligned so the columns line up whatever badges a row carries. The badge column reports **status only** — a directory carries no badge, since the `▸`/`▾` disclosure marker already identifies it, and its type appears in the VCS column.
-- **Badges.** A row can carry several: `📝` dirty, `⬆` ahead, `⬇` behind. Otherwise `✅` clean and backed up by a remote, `○` clean but with no remote configured, `❌` corrupted, `⚠️` scan error, `⏳` action running.
+- **Columns.** Each row is `status · type · name · detail`, and every column has a width fixed by data known at listing time, so nothing shifts as background scans land. A rule and a `Total` line close the table with the item count and the aggregate.
+- **Badges.** Status occupies three fixed one-cell slots, so a glyph always appears in the same column: `●` dirty, then `↑` ahead / `↓` behind, then `✓` clean and backed up / `○` no remote / `✗` corrupted / `!` scan error / `⋯` action running. Text-presentation glyphs are used throughout because emoji render at inconsistent widths, which is what makes columns wander.
+- **Type icon.** Left of the name: `📁` a directory, `⎇` a Git repository, `⑂` a Jujutsu repository.
 
 The list scrolls when there are more repositories than fit on screen, and the status of each updates in the background.
 
