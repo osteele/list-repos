@@ -56,9 +56,15 @@ func (i tuiItem) expandable() bool {
 	return i.status != nil && i.status.Type == vcs.Dir
 }
 
-// icon renders the item's state as badges. Failure states stand alone;
-// otherwise dirty and ahead/behind can appear together, since a repo is
-// routinely both.
+// icon renders the item's state as badges. It reports *status only* and
+// never type: a glyph column that sometimes means "this is a folder" and
+// sometimes means "this is clean" cannot be scanned, because nothing tells
+// the reader which meaning is in force. Directories therefore carry no
+// badge -- the disclosure marker already identifies them -- and the type
+// is rendered in its own column.
+//
+// Failure states stand alone; otherwise dirty and ahead/behind appear
+// together, since a repo is routinely both.
 func (i tuiItem) icon() string {
 	if i.busy {
 		return "⏳"
@@ -73,7 +79,7 @@ func (i tuiItem) icon() string {
 		return "⚠️"
 	}
 	if i.status.Type == vcs.Dir {
-		return "📁"
+		return ""
 	}
 	var badges string
 	if i.status.Dirty {
@@ -85,28 +91,66 @@ func (i tuiItem) icon() string {
 	if i.status.Behind.Positive() {
 		badges += "⬇"
 	}
-	if badges == "" {
-		return "✅"
+	if badges != "" {
+		return badges
 	}
-	return badges
+	// A repository with no remote is not "all good" -- it is the one state
+	// here with no copy anywhere else -- so it must not borrow the
+	// everything-is-fine checkmark.
+	if !i.status.Remote {
+		return "○"
+	}
+	return "✅"
 }
 
+// rowName is the name column: the disclosure marker, the nesting indent,
+// and the basename. The marker sits in a fixed slot so names line up
+// whether or not a row can expand.
+func (m model) rowName(i tuiItem) string {
+	marker := "  "
+	switch {
+	case i.expanded:
+		marker = "▾ "
+	case i.expandable():
+		marker = "▸ "
+	}
+	return marker + strings.Repeat("  ", i.depth) + i.name()
+}
+
+// pad right-pads s to w terminal cells.
+func pad(s string, w int) string {
+	if n := w - lipgloss.Width(s); n > 0 {
+		return s + strings.Repeat(" ", n)
+	}
+	return s
+}
+
+// typeText is the VCS column: git, jujutsu, or dir.
+func (i tuiItem) typeText() string {
+	if i.status == nil {
+		return ""
+	}
+	return i.status.Type.String()
+}
+
+// statusText is the status column. It excludes the repo type, which has
+// its own column.
 func (i tuiItem) statusText() string {
 	if i.status == nil {
 		return "loading…"
 	}
 	tokens := report.StatusTokens(i.status)
-	parts := make([]string, 0, len(tokens)+1)
-	// Failure states lead with the error itself, not the repo type.
-	if len(tokens) == 0 || (tokens[0].Kind != report.StateError && tokens[0].Kind != report.StateCorrupted) {
-		parts = append(parts, i.status.Type.String())
-	}
+	parts := make([]string, 0, len(tokens))
 	for _, tok := range tokens {
 		parts = append(parts, tok.Text)
 	}
 	text := strings.Join(parts, " ")
 	if i.busy {
-		text += "…"
+		if text == "" {
+			text = "…"
+		} else {
+			text += "…"
+		}
 	}
 	return text
 }
@@ -1000,21 +1044,26 @@ func (m model) View() string {
 			b.WriteString(dimStyle.Render(fmt.Sprintf("  ↑ %d more", m.offset)))
 			b.WriteString("\n")
 		}
+		// Column widths are measured across the visible rows so every
+		// column starts at the same screen position regardless of how wide
+		// a row's badges happen to render. lipgloss.Width counts terminal
+		// cells, which is what makes this correct for emoji.
+		badgeW, nameW, typeW := 0, 0, 0
 		for i := m.offset; i < end; i++ {
 			item := m.items[i]
-			// Expandable rows carry a disclosure marker before the name;
-			// children indent one level per expansion depth.
-			name := item.name()
-			if item.depth > 0 {
-				name = strings.Repeat("  ", item.depth) + name
-			}
-			switch {
-			case item.expanded:
-				name = "▾ " + name
-			case item.expandable():
-				name = "▸ " + name
-			}
-			line := fmt.Sprintf("%s %s  %s", item.icon(), name, item.statusText())
+			badgeW = max(badgeW, lipgloss.Width(item.icon()))
+			nameW = max(nameW, lipgloss.Width(m.rowName(item)))
+			typeW = max(typeW, lipgloss.Width(item.typeText()))
+		}
+
+		for i := m.offset; i < end; i++ {
+			item := m.items[i]
+			line := strings.TrimRight(strings.Join([]string{
+				pad(item.icon(), badgeW),
+				pad(m.rowName(item), nameW),
+				pad(item.typeText(), typeW),
+				item.statusText(),
+			}, " "), " ")
 			if i == m.cursor {
 				line = "> " + line
 				// Pad the bar to the full width so the reversed selection

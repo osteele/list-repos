@@ -216,7 +216,8 @@ Notes:
 - **Commit messages.** `c` opens a one-line input pre-filled with the default message. `enter` commits, `esc` cancels.
 - **One action at a time per repository.** While an action runs, its row shows `⏳` and further keys for that repository are ignored; other repositories remain available.
 - **Failures persist.** Successful results clear after a few seconds; failures stay until the next keypress, and the full command output is available via `enter`.
-- **Badges.** A row can carry several: `📝` dirty, `⬆` ahead, `⬇` behind, `✅` clean, `❌` corrupted, `⚠️` scan error, `📁` not a repository.
+- **Columns.** Each row is `badge · name · VCS · status`, width-aligned so the columns line up whatever badges a row carries. The badge column reports **status only** — a directory carries no badge, since the `▸`/`▾` disclosure marker already identifies it, and its type appears in the VCS column.
+- **Badges.** A row can carry several: `📝` dirty, `⬆` ahead, `⬇` behind. Otherwise `✅` clean and backed up by a remote, `○` clean but with no remote configured, `❌` corrupted, `⚠️` scan error, `⏳` action running.
 
 The list scrolls when there are more repositories than fit on screen, and the status of each updates in the background.
 

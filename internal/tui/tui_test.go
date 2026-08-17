@@ -395,6 +395,12 @@ func forceColorProfile(t *testing.T) {
 // reverseVideo matches an SGR sequence that includes parameter 7.
 var reverseVideo = regexp.MustCompile("\x1b\\[(?:[0-9]+;)*7(?:;[0-9]+)*m")
 
+// ansiSeq matches any SGR escape, so tests can measure layout on the
+// text the terminal actually lays out.
+var ansiSeq = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func stripANSI(s string) string { return ansiSeq.ReplaceAllString(s, "") }
+
 func TestSelectedRowUsesReverseVideo(t *testing.T) {
 	forceColorProfile(t)
 
@@ -423,7 +429,9 @@ func TestSelectedRowUsesReverseVideo(t *testing.T) {
 		t.Fatalf("expected reverse video on the selected row, got %q", selected[0])
 	}
 	// The marker stays as a non-color cue even where styling is stripped.
-	if !strings.Contains(selected[0], "> ⏱ repo00") {
+	// Interior spacing is column alignment's business, so assert on the
+	// marker and the row's identity rather than on exact padding.
+	if !strings.Contains(selected[0], "> ") || !strings.Contains(selected[0], "repo00") {
 		t.Fatalf("expected the > marker on the selected row, got %q", selected[0])
 	}
 	if len(unselected) != 2 {
@@ -487,5 +495,79 @@ func TestNoHardcodedForegroundColors(t *testing.T) {
 		if hardcoded.Match(data) {
 			t.Errorf("%s contains a hardcoded foreground color", path)
 		}
+	}
+}
+
+// TestRowColumnsAlign guards the readability property that the badge
+// column is status-only and fixed-width: names and types must start at the
+// same screen column on every row, whatever badges a row carries. Emoji
+// cell widths differ (📝 is two cells, ⬆ one), so this is the failure mode
+// that recurs whenever a row is built by concatenation instead of columns.
+func TestRowColumnsAlign(t *testing.T) {
+	forceColorProfile(t)
+	m := tuiModelWithDirs(t, 5)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	um := updated.(model)
+
+	// One row per badge shape: none, one wide, one narrow, two combined,
+	// and a container (no badge at all).
+	um.items[0].status = &vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{Known: true}}
+	um.items[1].status = &vcs.RepoStatus{Type: vcs.Git, Remote: true, Dirty: true}
+	um.items[2].status = &vcs.RepoStatus{Type: vcs.Jujutsu, Remote: true, Ahead: vcs.Count{N: 2, Known: true}}
+	um.items[3].status = &vcs.RepoStatus{Type: vcs.Jujutsu, Remote: true, Dirty: true, Ahead: vcs.Count{N: 1, Known: true}}
+	um.items[4].status = &vcs.RepoStatus{Type: vcs.Dir, NestedRepos: 3}
+
+	var nameCols, typeCols []int
+	for _, line := range strings.Split(um.View(), "\n") {
+		if !strings.Contains(line, "repo0") {
+			continue
+		}
+		plain := stripANSI(line)
+		idx := strings.Index(plain, "repo0")
+		nameCols = append(nameCols, lipgloss.Width(plain[:idx]))
+		// The type column begins after the padded name.
+		rest := plain[idx:]
+		off := strings.IndexAny(rest, " ")
+		trimmed := strings.TrimLeft(rest[off:], " ")
+		typeCols = append(typeCols, lipgloss.Width(plain[:len(plain)-len(trimmed)]))
+	}
+	if len(nameCols) != 5 {
+		t.Fatalf("expected 5 rows, got %d:\n%s", len(nameCols), um.View())
+	}
+	for i := range nameCols {
+		if nameCols[i] != nameCols[0] {
+			t.Errorf("name column starts at %d on row %d but %d on row 0:\n%s",
+				nameCols[i], i, nameCols[0], um.View())
+		}
+		if typeCols[i] != typeCols[0] {
+			t.Errorf("type column starts at %d on row %d but %d on row 0:\n%s",
+				typeCols[i], i, typeCols[0], um.View())
+		}
+	}
+}
+
+// TestNoRemoteDoesNotGetTheCleanCheckmark guards against a repository with
+// no remote borrowing the everything-is-fine glyph: it is the one state
+// with no copy anywhere else.
+func TestNoRemoteDoesNotGetTheCleanCheckmark(t *testing.T) {
+	noRemote := tuiItem{status: &vcs.RepoStatus{Type: vcs.Git}}
+	if got := noRemote.icon(); got == "✅" {
+		t.Fatalf("a repo with no remote must not show the clean checkmark, got %q", got)
+	}
+	backedUp := tuiItem{status: &vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{Known: true}}}
+	if got := backedUp.icon(); got != "✅" {
+		t.Fatalf("a clean repo with a remote should show the checkmark, got %q", got)
+	}
+}
+
+// TestDirectoryHasNoStatusBadge guards the separation the badge column
+// exists for: it reports status, never type.
+func TestDirectoryHasNoStatusBadge(t *testing.T) {
+	dir := tuiItem{status: &vcs.RepoStatus{Type: vcs.Dir, NestedRepos: 2}}
+	if got := dir.icon(); got != "" {
+		t.Fatalf("a directory must not occupy the status badge column, got %q", got)
+	}
+	if got := dir.typeText(); got != "dir" {
+		t.Fatalf("type belongs in the type column, got %q", got)
 	}
 }

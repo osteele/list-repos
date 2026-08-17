@@ -29,9 +29,11 @@ type Options struct {
 	MaxDepth int
 }
 
-// heavyDirs are build-output directories that are listed at the top level
-// but never descended into during a recursive scan, and whose contents do
-// not count toward a directory's nested repositories.
+// heavyDirs are build-output directories that are never listed, never
+// descended into, and whose contents do not count toward a directory's
+// nested repositories. They are not projects, so a row for one carries no
+// information; listing one while refusing to descend into it would also
+// advertise a repository count the scanner then declines to show.
 var heavyDirs = map[string]bool{
 	"node_modules": true,
 	"vendor":       true,
@@ -48,9 +50,9 @@ func hiddenName(name string) bool {
 	return len(name) > 0 && (name[0] == '.' || name[0] == '_')
 }
 
-// childDirs returns the immediate non-hidden subdirectories of dir. When
-// descending is true, heavy build directories are excluded as well.
-func childDirs(dir string, descending bool) ([]string, error) {
+// childDirs returns the immediate subdirectories of dir, excluding hidden,
+// meta, and heavy build directories.
+func childDirs(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -58,11 +60,14 @@ func childDirs(dir string, descending bool) ([]string, error) {
 
 	var subdirs []string
 	for _, entry := range entries {
+		// A symlink reports its own type here, not its target's, so
+		// symlinked repositories are deliberately not discovered. See
+		// docs/spec.md for why following them is not free.
 		if !entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		if hiddenName(name) || (descending && heavyDirs[name]) {
+		if hiddenName(name) || heavyDirs[name] {
 			continue
 		}
 		subdirs = append(subdirs, filepath.Join(dir, name))
@@ -70,16 +75,16 @@ func childDirs(dir string, descending bool) ([]string, error) {
 	return subdirs, nil
 }
 
-// GetSubdirectories returns the immediate non-hidden subdirectories of dir.
+// GetSubdirectories returns the immediate scannable subdirectories of dir.
 func GetSubdirectories(dir string) ([]string, error) {
-	return childDirs(dir, false)
+	return childDirs(dir)
 }
 
 // CountNestedRepos counts the immediate child directories of dir that are
 // themselves repositories, from a single shallow readdir. The same names
 // the scanner skips while descending do not count.
 func CountNestedRepos(dir string) int {
-	subdirs, err := childDirs(dir, true)
+	subdirs, err := childDirs(dir)
 	if err != nil {
 		return 0
 	}
@@ -119,8 +124,7 @@ func discover(root string, opts Options) ([]dirEntry, map[string]error, error) {
 		if e.depth >= maxDepth {
 			continue
 		}
-		descending := opts.Recursive && e.depth > 0
-		subdirs, err := childDirs(e.path, descending)
+		subdirs, err := childDirs(e.path)
 		if err != nil {
 			if e.depth == 0 {
 				return nil, nil, err
@@ -131,8 +135,7 @@ func discover(root string, opts Options) ([]dirEntry, map[string]error, error) {
 		for _, subdir := range subdirs {
 			entries = append(entries, dirEntry{path: subdir, depth: e.depth + 1})
 			// Stop at repositories: their contents are never listed.
-			// Heavy build directories are listed but never descended into.
-			if opts.Recursive && !heavyDirs[filepath.Base(subdir)] && vcs.DetectRepoType(subdir) == vcs.Dir {
+			if opts.Recursive && vcs.DetectRepoType(subdir) == vcs.Dir {
 				queue = append(queue, dirEntry{path: subdir, depth: e.depth + 1})
 			}
 		}

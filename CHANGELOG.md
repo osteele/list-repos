@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Handle non-git jj repos gracefully in status check (2025-11-10)
 
 ### Changed
+- TUI rows are width-aligned columns (badge, name, VCS, status). The badge column reports status only: a directory no longer occupies it with a folder icon, since the disclosure marker already identifies it and its type has its own column. Previously the same glyph slot meant "type" on some rows and "status" on others, so it could not be scanned (2026-08-16)
+- A clean repository with no remote shows `○` rather than `✅`; it is the one state here with no copy anywhere else, so it no longer borrows the everything-is-fine checkmark (2026-08-16)
+- Build-output directories (`node_modules`, `vendor`, `target`, `build`, `dist`, `venv`) are no longer listed at all, rather than being listed with a nested-repo count that recursion then refused to deliver (2026-08-16)
 - Batch output is now Name/VCS/Status, listing only noteworthy states, with color on terminals, `tabwriter` alignment, and a summary line (2026-08-16)
 - Non-repository directories are hidden unless `--all` is given (2026-08-16)
 - With `--filter`, exit 1 when anything matches and 2 for usage errors, so filters work as scriptable checks (2026-08-16)
