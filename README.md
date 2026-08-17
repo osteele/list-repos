@@ -198,7 +198,7 @@ In the TUI you can navigate the directory tree with `↑`/`↓` (or `k`/`j`) and
 | `←` / `h` | Collapse an expanded directory |
 | `p` | Push |
 | `u` | Pull (Git) / fetch (Jujutsu) |
-| `c` | Commit all changes; opens a prompt for the message |
+| `c` | Commit all changes; opens a prompt for the message, pre-filled with an AI-drafted one when `git-ai-commit`/`jj-ai-commit` is on `PATH` |
 | `s` | Sync (pull then push) |
 | `P` | Push all eligible repositories in scope (asks to confirm) |
 | `U` | Pull all eligible repositories in scope (asks to confirm) |

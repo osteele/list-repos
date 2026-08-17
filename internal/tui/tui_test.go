@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -832,5 +833,76 @@ func TestDetailColumnHoldsAcrossDepths(t *testing.T) {
 	}
 	if cols[0] != cols[1] {
 		t.Fatalf("detail column moved with the indent: %d vs %d:\n%s", cols[0], cols[1], um.View())
+	}
+}
+
+func TestDraftSeedsOnlyAnUntouchedPrompt(t *testing.T) {
+	m := tuiModelWithDirs(t, 1)
+	path := m.items[0].path
+	m.draftPath = path
+	m.drafting = true
+	_ = m.commitInput.Focus()
+	m.commitInput.SetValue(actions.DefaultCommitMessage)
+
+	updated, _ := m.Update(draftMsg{path: path, message: "feat: drafted by the tool"})
+	um := updated.(model)
+	if um.commitInput.Value() != "feat: drafted by the tool" {
+		t.Fatalf("expected the draft to seed an untouched prompt, got %q", um.commitInput.Value())
+	}
+	if um.drafting {
+		t.Fatal("expected drafting to finish")
+	}
+
+	// A prompt the user has begun editing must not be overwritten.
+	m2 := tuiModelWithDirs(t, 1)
+	p2 := m2.items[0].path
+	m2.draftPath = p2
+	m2.drafting = true
+	_ = m2.commitInput.Focus()
+	m2.commitInput.SetValue("my own words")
+	updated, _ = m2.Update(draftMsg{path: p2, message: "feat: drafted by the tool"})
+	if got := updated.(model).commitInput.Value(); got != "my own words" {
+		t.Fatalf("a draft must not overwrite the user's typing, got %q", got)
+	}
+}
+
+func TestDraftFailureKeepsTheCannedDefault(t *testing.T) {
+	m := tuiModelWithDirs(t, 1)
+	path := m.items[0].path
+	m.draftPath = path
+	m.drafting = true
+	_ = m.commitInput.Focus()
+	m.commitInput.SetValue(actions.DefaultCommitMessage)
+
+	updated, _ := m.Update(draftMsg{path: path, err: errors.New("tool exploded")})
+	um := updated.(model)
+	if um.commitInput.Value() != actions.DefaultCommitMessage {
+		t.Fatalf("a failed draft must leave the prompt usable, got %q", um.commitInput.Value())
+	}
+	if um.drafting {
+		t.Fatal("expected drafting to finish even on failure")
+	}
+	// An empty draft is treated the same way.
+	updated, _ = m.Update(draftMsg{path: path, message: "   "})
+	if got := updated.(model).commitInput.Value(); got != actions.DefaultCommitMessage {
+		t.Fatalf("an empty draft must leave the canned default, got %q", got)
+	}
+}
+
+func TestDraftForAnotherRepositoryIsIgnored(t *testing.T) {
+	m := tuiModelWithDirs(t, 2)
+	m.draftPath = m.items[0].path
+	m.drafting = true
+	_ = m.commitInput.Focus()
+	m.commitInput.SetValue(actions.DefaultCommitMessage)
+
+	// A draft that arrives after the prompt moved on must not land.
+	updated, _ := m.Update(draftMsg{path: m.items[1].path, message: "feat: wrong repo"})
+	um := updated.(model)
+	if um.commitInput.Value() != actions.DefaultCommitMessage {
+		t.Fatalf("a stale draft must be ignored, got %q", um.commitInput.Value())
+	}
+	if !um.drafting {
+		t.Fatal("a stale draft must not clear the pending state")
 	}
 }

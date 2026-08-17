@@ -322,7 +322,7 @@ func TestExecuteBulkCommitUsesAITool(t *testing.T) {
 	}
 }
 
-func TestExecuteBulkCommitDryRunPassesThrough(t *testing.T) {
+func TestExecuteBulkCommitDryRunRequestsMessageOnly(t *testing.T) {
 	recordFile := fakeCommitTool(t, "git-ai-commit", "echo 'feat: would commit this'")
 
 	localDir := filepath.Join(t.TempDir(), "repo")
@@ -350,8 +350,11 @@ func TestExecuteBulkCommitDryRunPassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(recorded), "--dry-run") {
-		t.Fatalf("expected --dry-run to reach the tool, got %q", recorded)
+	// The draft is requested with --print-message, which implies dry-run and
+	// returns the message alone, rather than --dry-run whose human-facing
+	// report would have to be scraped.
+	if !strings.Contains(string(recorded), "--print-message") {
+		t.Fatalf("expected --print-message to reach the tool, got %q", recorded)
 	}
 
 	// A dry run commits nothing: the repo is still dirty.

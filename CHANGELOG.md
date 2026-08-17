@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-VCS behavior moved behind a `Backend` interface, selected once from the detected repo type (2026-08-16)
 
 ### Added
+- TUI: `c` pre-fills the commit prompt with a message drafted by `git-ai-commit`/`jj-ai-commit` when either is on `PATH`. The prompt opens immediately on the canned default and is editable throughout; the draft replaces it only if untouched, and a failed or slow draft simply leaves the default in place (2026-08-17)
 - TUI: a directory row rolls up the repositories beneath it — `agent-tools  dir  14 repos, 3 dirty, 8 ahead` — computed in the background so the row shows its plain count immediately and fills in as the subtree scan lands (2026-08-16)
 - TUI: a total row above the list aggregates the whole scan, standing in for the scan root itself without an indent level; an ellipsis marks a total still waiting on subtree scans (2026-08-16)
 - Bulk operations: `--commit-all`, `--pull-all`, `--push-all`, and `--sync-all` act on every eligible repository in scope, composing with `--filter`, `--sort`, `-r`/`--depth`, and the positional directory. Each run prints a plan first, asks `Proceed? [y/N]`, streams one result line per repository, exits 1 if any repository failed, and refuses (exit 2) when stdin is not a terminal without `--yes`/`--dry-run` (2026-08-16)

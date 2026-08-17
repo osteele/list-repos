@@ -289,6 +289,13 @@ type bulkDoneMsg struct {
 	failed    int
 }
 
+// draftMsg carries a proposed commit message from the AI commit tool.
+type draftMsg struct {
+	path    string
+	message string
+	err     error
+}
+
 type clearMsg struct{}
 
 // pendingAction is a destructive action awaiting y/n confirmation.
@@ -312,8 +319,12 @@ type model struct {
 	keys          keyMap
 	pending       *pendingAction
 	commitInput   textinput.Model
-	detail        viewport.Model
-	showDetail    bool
+	// drafting reports that a commit message is being generated for
+	// draftPath; the prompt is already open and editable meanwhile.
+	drafting   bool
+	draftPath  string
+	detail     viewport.Model
+	showDetail bool
 }
 
 type keyMap struct {
@@ -765,6 +776,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case draftMsg:
+		if msg.path != m.draftPath {
+			return m, nil // the prompt moved on to another repository
+		}
+		m.drafting = false
+		if msg.err != nil || strings.TrimSpace(msg.message) == "" {
+			return m, nil // keep the canned default; the prompt still works
+		}
+		// Only seed an untouched prompt: replacing text the user has begun
+		// editing would be worse than offering no draft at all.
+		if m.commitInput.Focused() && m.commitInput.Value() == actions.DefaultCommitMessage {
+			m.commitInput.SetValue(msg.message)
+			m.commitInput.CursorEnd()
+		}
+		return m, nil
+
 	case clearMsg:
 		if !m.messageSticky {
 			m.message = ""
@@ -951,12 +978,14 @@ func (m model) handleCommitInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.commitInput.Blur()
 		m.commitInput.SetValue("")
+		m.drafting, m.draftPath = false, ""
 		return m.runAction("commit", func(path string) error {
 			return actions.ActionCommit(path, message)
 		})
 	case tea.KeyEsc, tea.KeyCtrlC:
 		m.commitInput.Blur()
 		m.commitInput.SetValue("")
+		m.drafting, m.draftPath = false, ""
 		m.message = "commit cancelled"
 		return m, clearAfter(2 * time.Second)
 	}
@@ -975,7 +1004,25 @@ func (m model) startCommit() (tea.Model, tea.Cmd) {
 	}
 	m.commitInput.SetValue(actions.DefaultCommitMessage)
 	m.commitInput.CursorEnd()
-	return m, m.commitInput.Focus()
+	cmds := []tea.Cmd{m.commitInput.Focus()}
+	// Drafting reaches an LLM and takes seconds, so the prompt opens
+	// immediately on the canned message and the draft replaces it when it
+	// lands. Typing is never blocked, and never interrupted -- the draft is
+	// dropped if the user has already started editing.
+	if actions.CommitToolAvailable(item.path) {
+		m.drafting = true
+		m.draftPath = item.path
+		cmds = append(cmds, draftCommitCmd(item.path))
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// draftCommitCmd asks the AI commit tool for a proposed message.
+func draftCommitCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		message, err := actions.DraftCommitMessage(path)
+		return draftMsg{path: path, message: message, err: err}
+	}
 }
 
 func (m model) busyMessage(item tuiItem) (tea.Model, tea.Cmd) {
@@ -1310,7 +1357,11 @@ func (m model) View() string {
 	case m.commitInput.Focused():
 		b.WriteString(m.commitInput.View())
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("enter to commit, esc to cancel"))
+		hint := "enter to commit, esc to cancel"
+		if m.drafting {
+			hint = "drafting message… (editable now; enter to commit, esc to cancel)"
+		}
+		b.WriteString(dimStyle.Render(hint))
 		b.WriteString("\n\n")
 	case m.pending != nil:
 		b.WriteString(msgStyle.Render(m.pending.prompt))

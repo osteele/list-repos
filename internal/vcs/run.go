@@ -16,6 +16,13 @@ const (
 	// NetworkTimeout bounds operations that talk to a remote (push, pull,
 	// fetch, GitHub-remote setup, repair's fetch).
 	NetworkTimeout = 120 * time.Second
+	// DraftTimeout bounds the AI commit-message tools. These are not just
+	// network calls: the model reads the whole diff and writes prose.
+	// Measured drafts of a one-file change took 2m10s and 3m19s, so
+	// NetworkTimeout would have failed most of them. The generous ceiling
+	// costs nothing when the tool is quick and is why the prompt must never
+	// block on it.
+	DraftTimeout = 6 * time.Minute
 )
 
 // RunVCS runs a git/jj command in dir with a timeout and a non-interactive
@@ -29,6 +36,14 @@ func RunVCS(dir string, timeout time.Duration, name string, args ...string) ([]b
 // uses StatusTimeout.
 func RunVCSOutput(dir, name string, args ...string) ([]byte, error) {
 	return runVCSWith(dir, StatusTimeout, false, name, args...)
+}
+
+// RunVCSOutputWithin is RunVCSOutput with an explicit timeout, for
+// stdout-only commands that outlive the status budget. Stdout-only matters
+// as much as the timeout here: the AI commit-message tools write a progress
+// spinner to stderr, which combined output would splice into the result.
+func RunVCSOutputWithin(dir string, timeout time.Duration, name string, args ...string) ([]byte, error) {
+	return runVCSWith(dir, timeout, false, name, args...)
 }
 
 func runVCSWith(dir string, timeout time.Duration, combined bool, name string, args ...string) ([]byte, error) {

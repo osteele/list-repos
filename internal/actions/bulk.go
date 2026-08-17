@@ -269,17 +269,40 @@ func runOne(op BulkOp, path string, dryRun bool) (string, error) {
 
 // actionCommitAI commits with an AI-generated message from git-ai-commit or
 // jj-ai-commit. These call an LLM API, so they run under the network
-// timeout, not the short status timeout. With dryRun the tool's own
-// --dry-run flag shows the message without committing.
+// timeout, not the short status timeout. With dryRun the message is drafted
+// and printed but nothing is committed.
 func actionCommitAI(path string, dryRun bool) (string, error) {
-	tool := CommitToolFor(vcs.DetectRepoType(path))
-	var args []string
 	if dryRun {
-		args = append(args, "--dry-run")
+		return DraftCommitMessage(path)
 	}
-	output, err := vcs.RunVCS(path, vcs.NetworkTimeout, tool, args...)
+	tool := CommitToolFor(vcs.DetectRepoType(path))
+	output, err := vcs.RunVCS(path, vcs.DraftTimeout, tool)
 	if err != nil {
 		return "", fmt.Errorf("%s failed: %w\n%s", tool, err, output)
 	}
 	return string(output), nil
+}
+
+// CommitToolAvailable reports whether the AI commit-message tool for the
+// repository at path is on PATH.
+func CommitToolAvailable(path string) bool {
+	_, err := exec.LookPath(CommitToolFor(vcs.DetectRepoType(path)))
+	return err == nil
+}
+
+// DraftCommitMessage returns a proposed commit message for the repository
+// at path, without committing anything.
+//
+// It asks the tool for the message alone via --print-message rather than
+// scraping one out of --dry-run's human-facing report, which interleaves
+// section headings and a progress spinner and would break the first time
+// that output was reformatted. The call reaches an LLM API, so it runs
+// under the network timeout.
+func DraftCommitMessage(path string) (string, error) {
+	tool := CommitToolFor(vcs.DetectRepoType(path))
+	output, err := vcs.RunVCSOutputWithin(path, vcs.DraftTimeout, tool, "--print-message")
+	if err != nil {
+		return "", fmt.Errorf("%s failed: %w", tool, err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }
