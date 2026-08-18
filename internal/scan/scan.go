@@ -244,7 +244,10 @@ func ScanDirectories(dirs []string) ([]*vcs.RepoStatus, int) {
 			// whatever damage detection found; a plain error is not damage.
 			status := result.status
 			if status == nil {
-				status = &vcs.RepoStatus{Path: result.path, Type: vcs.Dir}
+				// Keep the detected type: an unreadable repository is still a
+				// repository, and the table's VCS column is the clue to which
+				// tool failed.
+				status = &vcs.RepoStatus{Path: result.path, Type: vcs.DetectRepoType(result.path)}
 			}
 			if status.Error == "" {
 				status.Error = result.err.Error()

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -136,6 +137,29 @@ func tuiModelWithDirs(t *testing.T, n int) model {
 	return m
 }
 
+// tuiModelWithGitRepo builds a model over one real (empty) Git repository,
+// for keys that act only on repositories.
+func tuiModelWithGitRepo(t *testing.T) model {
+	t.Helper()
+	tmpDir, err := os.MkdirTemp("", "tui-git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	repo := filepath.Join(tmpDir, "repo00")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	m, err := newModel(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
 func TestRepairRequiresConfirmation(t *testing.T) {
 	m := tuiModelWithDirs(t, 1)
 
@@ -182,7 +206,7 @@ func TestBusyItemIgnoresSecondAction(t *testing.T) {
 }
 
 func TestCommitInputCancels(t *testing.T) {
-	m := tuiModelWithDirs(t, 1)
+	m := tuiModelWithGitRepo(t)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 	um := updated.(model)
@@ -589,6 +613,7 @@ func TestRollupText(t *testing.T) {
 		{"singular", rollup{repos: 1}, "1 repo"},
 		{"mixed", rollup{repos: 14, dirty: 3, ahead: 8}, "14 repos, 3 dirty, 8 ahead"},
 		{"behind too", rollup{repos: 2, behind: 1}, "2 repos, 1 behind"},
+		{"unknown ahead", rollup{repos: 3, unknown: 2}, "3 repos, 2 ahead ?"},
 	}
 	for _, tc := range cases {
 		if got := tc.r.text(); got != tc.want {
@@ -653,7 +678,9 @@ func TestTotalAggregatesWithoutDoubleCounting(t *testing.T) {
 	if !complete {
 		t.Fatal("expected the total to be complete")
 	}
-	want := rollup{repos: 7, dirty: 2, ahead: 3}
+	// items[0] has a remote but no known ahead count, so it also counts as
+	// one unverified repository.
+	want := rollup{repos: 7, dirty: 2, ahead: 3, unknown: 1}
 	if tot != want {
 		t.Fatalf("total = %+v, want %+v", tot, want)
 	}
@@ -904,5 +931,154 @@ func TestDraftForAnotherRepositoryIsIgnored(t *testing.T) {
 	}
 	if !um.drafting {
 		t.Fatal("a stale draft must not clear the pending state")
+	}
+}
+
+// TestDraftFromAClosedPromptIsIgnored guards the sequence counter: a draft
+// still in flight when its prompt is submitted must not seed a later prompt
+// opened on the same repository, whose diff it no longer describes.
+func TestDraftFromAClosedPromptIsIgnored(t *testing.T) {
+	m := tuiModelWithDirs(t, 1)
+	path := m.items[0].path
+	m.draftSeq = 2
+	m.draftPath = path
+	m.drafting = true
+	_ = m.commitInput.Focus()
+	m.commitInput.SetValue(actions.DefaultCommitMessage)
+
+	updated, _ := m.Update(draftMsg{path: path, seq: 1, message: "stale"})
+	um := updated.(model)
+	if um.commitInput.Value() != actions.DefaultCommitMessage {
+		t.Fatalf("a draft from a closed prompt must not seed the next one, got %q", um.commitInput.Value())
+	}
+	if !um.drafting {
+		t.Fatal("the current draft is still pending, so drafting must survive")
+	}
+
+	updated, _ = um.Update(draftMsg{path: path, seq: 2, message: "fresh"})
+	um = updated.(model)
+	if um.commitInput.Value() != "fresh" {
+		t.Fatalf("expected the current draft to seed the prompt, got %q", um.commitInput.Value())
+	}
+	if um.drafting {
+		t.Fatal("expected drafting to finish")
+	}
+}
+
+// TestStartCommitRefusesNonRepository: the commit prompt must not open on a
+// directory row, and above all no AI draft may be requested for one —
+// that would invoke an external LLM tool in a directory that is not a
+// repository at all.
+func TestStartCommitRefusesNonRepository(t *testing.T) {
+	m := tuiModelWithDirs(t, 1)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	um := updated.(model)
+	if um.commitInput.Focused() {
+		t.Fatal("the commit prompt must not open on a directory row")
+	}
+	if um.drafting {
+		t.Fatal("no draft may start for a directory")
+	}
+	if !strings.Contains(um.message, "not a repository") {
+		t.Fatalf("expected a refusal message, got %q", um.message)
+	}
+}
+
+// TestShouldDraftCommitMessage pins which rows deserve an AI draft: only a
+// repository with changes to describe. A clean repository has nothing to
+// draft, and a corrupted one cannot be committed anyway.
+func TestShouldDraftCommitMessage(t *testing.T) {
+	cases := []struct {
+		name   string
+		status *vcs.RepoStatus
+		want   bool
+	}{
+		{"still loading", nil, false},
+		{"clean", &vcs.RepoStatus{Type: vcs.Git, Remote: true}, false},
+		{"corrupted", &vcs.RepoStatus{Type: vcs.Git, Dirty: true, Corrupted: true}, false},
+		{"dirty git", &vcs.RepoStatus{Type: vcs.Git, Dirty: true}, true},
+		{"dirty jj", &vcs.RepoStatus{Type: vcs.Jujutsu, Dirty: true}, true},
+	}
+	for _, tc := range cases {
+		if got := shouldDraftCommitMessage(tc.status); got != tc.want {
+			t.Errorf("%s: shouldDraftCommitMessage = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestRollupFailureKeepsShallowCount: a subtree scan that fails must not
+// report an empty subtree. The row keeps its shallow count and the total
+// stays honestly incomplete, rather than claiming zero repositories were
+// found beneath a directory that was never read.
+func TestRollupFailureKeepsShallowCount(t *testing.T) {
+	m := tuiModelWithDirs(t, 1)
+	path := m.items[0].path
+	updated, _ := m.Update(statusMsg{path: path, status: &vcs.RepoStatus{Path: path, Type: vcs.Dir, NestedRepos: 3}})
+	um := updated.(model)
+
+	updated, _ = um.Update(rollupMsg{path: path, err: errors.New("subtree unreadable")})
+	um = updated.(model)
+	if um.items[0].rolledUp {
+		t.Fatal("a failed subtree scan must not count as rolled up")
+	}
+	if got := um.items[0].statusText(); got != "3 repos" {
+		t.Fatalf("expected the shallow count to survive a failed rollup, got %q", got)
+	}
+	if _, complete := um.total(); complete {
+		t.Fatal("the total must stay incomplete when a subtree scan failed")
+	}
+}
+
+// TestRollupCountsUnknownAhead: a repository whose ahead count could not be
+// determined is not the same as one with none — it may have unpushed
+// commits. The rollup reports it as "ahead ?" rather than silently calling
+// the subtree synced.
+func TestRollupCountsUnknownAhead(t *testing.T) {
+	var r rollup
+	r = r.add(&vcs.RepoStatus{Type: vcs.Git, Remote: true, Ahead: vcs.Count{N: 2, Known: true}})
+	r = r.add(&vcs.RepoStatus{Type: vcs.Git, Remote: true}) // ahead unknown
+	r = r.add(&vcs.RepoStatus{Type: vcs.Git})               // no remote: local, not unknown
+	if r != (rollup{repos: 3, ahead: 1, unknown: 1}) {
+		t.Fatalf("rollup = %+v, want {repos:3 ahead:1 unknown:1}", r)
+	}
+	if got := r.text(); got != "3 repos, 1 ahead, 1 ahead ?" {
+		t.Fatalf("rollup text = %q", got)
+	}
+}
+
+// brokenGitRepo creates a directory that is structurally a Git repository
+// (so damage detection passes) but whose HEAD names an object that does not
+// exist, so every git command fails.
+func brokenGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	for _, sub := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(gitDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := strings.Repeat("a", 40) + "\n"
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte(head), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestLoadStatusFallbackKeepsRepoType: when a repository's status cannot be
+// read, the fallback row must still identify it as a repository — labeling
+// it a directory invites expanding it and hides which VCS acted wrongly.
+func TestLoadStatusFallbackKeepsRepoType(t *testing.T) {
+	dir := brokenGitRepo(t)
+	msg := loadStatusCmd(dir)()
+	st, ok := msg.(statusMsg)
+	if !ok {
+		t.Fatalf("expected statusMsg, got %T", msg)
+	}
+	if st.status.Type != vcs.Git {
+		t.Fatalf("an unreadable repository must keep its type, got %s", st.status.Type)
+	}
+	if st.status.Error == "" {
+		t.Fatal("expected the failure to be surfaced in the row")
 	}
 }

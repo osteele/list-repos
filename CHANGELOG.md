@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- TUI: `c` on a non-repository row no longer opens the commit prompt, which would have invoked the AI commit tool in a plain directory; a draft is also skipped for clean or corrupted repositories, where there is no diff worth an LLM call (2026-08-18)
+- TUI: a commit-message draft still in flight when its prompt is submitted no longer seeds a later prompt opened on the same repository, whose diff it no longer describes (2026-08-18)
+- TUI: a container whose subtree scan fails keeps its shallow count and leaves the total marked incomplete, rather than reporting an empty subtree that was never read (2026-08-18)
+- A repository whose status query fails keeps its VCS identity in the table and the TUI instead of being labeled a directory, so the row shows which tool failed (2026-08-18)
+- TUI: subtree rollups and the total count repositories whose ahead count could not be determined as `N ahead ?` — matching the table's `ahead ?` token — instead of silently counting them as synced (2026-08-18)
 - Repair no longer runs its pre-checkout safety commit in the wrong directory, which silently skipped preserving local working-tree files (2026-08-16)
 - Repair keeps the `.git.broken` backup instead of deleting it, so stashes, reflog, and unpushed branches survive a recovery (2026-08-16)
 - A repository that fails to scan is reported as an error rather than as corrupted, so it no longer invites the `.git`-moving repair action (2026-08-16)

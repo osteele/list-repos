@@ -289,9 +289,13 @@ type bulkDoneMsg struct {
 	failed    int
 }
 
-// draftMsg carries a proposed commit message from the AI commit tool.
+// draftMsg carries a proposed commit message from the AI commit tool. seq
+// identifies which prompt it belongs to: a draft still in flight when its
+// prompt is submitted must not seed a later prompt on the same repository,
+// whose diff it no longer describes.
 type draftMsg struct {
 	path    string
+	seq     int
 	message string
 	err     error
 }
@@ -320,9 +324,12 @@ type model struct {
 	pending       *pendingAction
 	commitInput   textinput.Model
 	// drafting reports that a commit message is being generated for
-	// draftPath; the prompt is already open and editable meanwhile.
+	// draftPath; the prompt is already open and editable meanwhile. draftSeq
+	// distinguishes the in-flight draft from any earlier one for the same
+	// path.
 	drafting   bool
 	draftPath  string
+	draftSeq   int
 	detail     viewport.Model
 	showDetail bool
 }
@@ -501,7 +508,10 @@ func loadStatusCmd(path string) tea.Cmd {
 			// status detection produced (including its Corrupted verdict) and
 			// surface the error without forcing the repair-dangerous state.
 			if status == nil {
-				status = &vcs.RepoStatus{Path: path, Type: vcs.Dir}
+				// Keep the detected type: an unreadable repository is still a
+				// repository, and mislabeling it a directory invites
+				// expanding it instead of showing which VCS failed.
+				status = &vcs.RepoStatus{Path: path, Type: vcs.DetectRepoType(path)}
 			}
 			if status.Error == "" {
 				status.Error = err.Error()
@@ -521,10 +531,11 @@ const rollupDepth = 4
 
 // rollup is the aggregate state of the repositories beneath a directory.
 type rollup struct {
-	repos  int
-	dirty  int
-	ahead  int
-	behind int
+	repos   int
+	dirty   int
+	ahead   int
+	behind  int
+	unknown int
 }
 
 func (r rollup) add(s *vcs.RepoStatus) rollup {
@@ -541,11 +552,17 @@ func (r rollup) add(s *vcs.RepoStatus) rollup {
 	if s.Behind.Positive() {
 		r.behind++
 	}
+	// An undetermined ahead count is not zero — the repository may have
+	// unpushed commits. Reporting it keeps the rollup from calling a
+	// subtree synced when it was merely unverified.
+	if s.Remote && !s.Ahead.Known {
+		r.unknown++
+	}
 	return r
 }
 
 func (r rollup) plus(o rollup) rollup {
-	return rollup{r.repos + o.repos, r.dirty + o.dirty, r.ahead + o.ahead, r.behind + o.behind}
+	return rollup{r.repos + o.repos, r.dirty + o.dirty, r.ahead + o.ahead, r.behind + o.behind, r.unknown + o.unknown}
 }
 
 // text renders the rollup for a status column: the repository count plus
@@ -564,6 +581,9 @@ func (r rollup) text() string {
 	}
 	if r.behind > 0 {
 		parts = append(parts, fmt.Sprintf("%d behind", r.behind))
+	}
+	if r.unknown > 0 {
+		parts = append(parts, fmt.Sprintf("%d ahead ?", r.unknown))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -585,10 +605,12 @@ func plural(n int, word string) string {
 	return word + "s"
 }
 
-// rollupMsg carries a container's aggregated descendant state.
+// rollupMsg carries a container's aggregated descendant state. A non-nil
+// err means the subtree could not be read and the aggregate is unknown.
 type rollupMsg struct {
 	path string
 	r    rollup
+	err  error
 }
 
 // loadRollupCmd aggregates the state of every repository beneath a
@@ -599,7 +621,7 @@ func loadRollupCmd(path string) tea.Cmd {
 	return func() tea.Msg {
 		statuses, err := scan.Scan(path, scan.Options{Recursive: true, MaxDepth: rollupDepth})
 		if err != nil {
-			return rollupMsg{path: path}
+			return rollupMsg{path: path, err: err}
 		}
 		var r rollup
 		for _, s := range statuses {
@@ -703,7 +725,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case rollupMsg:
-		if idx := m.findByPath(msg.path); idx >= 0 {
+		if idx := m.findByPath(msg.path); idx >= 0 && msg.err == nil {
+			// A failed subtree scan leaves the row on its shallow count and
+			// the total honestly incomplete; claiming an empty subtree that
+			// was never read would hide the failure behind a quiet row.
 			m.items[idx].roll = msg.r
 			m.items[idx].rolledUp = true
 		}
@@ -777,8 +802,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case draftMsg:
-		if msg.path != m.draftPath {
-			return m, nil // the prompt moved on to another repository
+		if msg.path != m.draftPath || msg.seq != m.draftSeq {
+			return m, nil // the prompt moved on; the draft is stale
 		}
 		m.drafting = false
 		if msg.err != nil || strings.TrimSpace(msg.message) == "" {
@@ -979,6 +1004,7 @@ func (m model) handleCommitInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.commitInput.Blur()
 		m.commitInput.SetValue("")
 		m.drafting, m.draftPath = false, ""
+		m.draftSeq++
 		return m.runAction("commit", func(path string) error {
 			return actions.ActionCommit(path, message)
 		})
@@ -986,6 +1012,7 @@ func (m model) handleCommitInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.commitInput.Blur()
 		m.commitInput.SetValue("")
 		m.drafting, m.draftPath = false, ""
+		m.draftSeq++
 		m.message = "commit cancelled"
 		return m, clearAfter(2 * time.Second)
 	}
@@ -1002,6 +1029,13 @@ func (m model) startCommit() (tea.Model, tea.Cmd) {
 	if item.busy {
 		return m.busyMessage(item)
 	}
+	// Only a repository can be committed. Beyond the inevitable failure,
+	// drafting would invoke the AI commit tool in a directory that is not a
+	// repository at all.
+	if vcs.DetectRepoType(item.path) == vcs.Dir {
+		m.message = fmt.Sprintf("%s: not a repository", item.name())
+		return m, clearAfter(2 * time.Second)
+	}
 	m.commitInput.SetValue(actions.DefaultCommitMessage)
 	m.commitInput.CursorEnd()
 	cmds := []tea.Cmd{m.commitInput.Focus()}
@@ -1009,19 +1043,28 @@ func (m model) startCommit() (tea.Model, tea.Cmd) {
 	// immediately on the canned message and the draft replaces it when it
 	// lands. Typing is never blocked, and never interrupted -- the draft is
 	// dropped if the user has already started editing.
-	if actions.CommitToolAvailable(item.path) {
+	if shouldDraftCommitMessage(item.status) && actions.CommitToolAvailable(item.path) {
 		m.drafting = true
 		m.draftPath = item.path
-		cmds = append(cmds, draftCommitCmd(item.path))
+		m.draftSeq++
+		cmds = append(cmds, draftCommitCmd(item.path, m.draftSeq))
 	}
 	return m, tea.Batch(cmds...)
 }
 
-// draftCommitCmd asks the AI commit tool for a proposed message.
-func draftCommitCmd(path string) tea.Cmd {
+// shouldDraftCommitMessage reports whether a row deserves an AI draft: the
+// tool reads the diff, so there must be one, and a corrupted repository
+// cannot be committed no matter what the message says.
+func shouldDraftCommitMessage(status *vcs.RepoStatus) bool {
+	return status != nil && status.Dirty && !status.Corrupted
+}
+
+// draftCommitCmd asks the AI commit tool for a proposed message. seq ties
+// the result to the prompt that requested it.
+func draftCommitCmd(path string, seq int) tea.Cmd {
 	return func() tea.Msg {
 		message, err := actions.DraftCommitMessage(path)
-		return draftMsg{path: path, message: message, err: err}
+		return draftMsg{path: path, seq: seq, message: message, err: err}
 	}
 }
 

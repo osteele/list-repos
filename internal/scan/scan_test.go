@@ -5,7 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/osteele/gitsync/internal/vcs"
 )
 
 func TestGetSubdirectories(t *testing.T) {
@@ -146,5 +149,41 @@ func TestScanWritesNothingToStderr(t *testing.T) {
 	}
 	if !sawError {
 		t.Fatal("expected the errored directory to carry an error row")
+	}
+}
+
+// brokenGitRepo creates a directory that is structurally a Git repository
+// (so damage detection passes) but whose HEAD names an object that does not
+// exist, so the status query fails without the repo being corrupted.
+func brokenGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	for _, sub := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(gitDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := strings.Repeat("a", 40) + "\n"
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte(head), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestScanDirectoriesErrorRowKeepsRepoType: a repository whose status query
+// fails must not be relabeled a plain directory in the table — the VCS
+// column is the user's clue to which tool misbehaved.
+func TestScanDirectoriesErrorRowKeepsRepoType(t *testing.T) {
+	dir := brokenGitRepo(t)
+	results, _ := ScanDirectories([]string{dir})
+	if len(results) != 1 {
+		t.Fatalf("expected one row, got %d", len(results))
+	}
+	if results[0].Type != vcs.Git {
+		t.Fatalf("an unreadable repository must keep its type, got %s", results[0].Type)
+	}
+	if results[0].Error == "" {
+		t.Fatal("expected the failure to be surfaced in the row")
 	}
 }
