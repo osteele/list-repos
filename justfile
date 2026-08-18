@@ -9,7 +9,7 @@ setup:
     go mod tidy
     @echo "Installing development tools..."
     go install github.com/evilmartians/lefthook
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint
     @echo "Setting up git hooks..."
     lefthook install
     @echo "Setup complete!"

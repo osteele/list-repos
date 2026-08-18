@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- golangci-lint is pinned to v2.12.2 under its `/v2` module path (tools.go, justfile setup); the previous v1.64.8 pin was the last v1 release, built with go1.25, and could not analyze a go 1.26 module (2026-08-18)
+
 ### Fixed
 - TUI: `c` on a non-repository row no longer opens the commit prompt, which would have invoked the AI commit tool in a plain directory; a draft is also skipped for clean or corrupted repositories, where there is no diff worth an LLM call (2026-08-18)
 - TUI: a commit-message draft still in flight when its prompt is submitted no longer seeds a later prompt opened on the same repository, whose diff it no longer describes (2026-08-18)
