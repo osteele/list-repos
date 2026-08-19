@@ -12,18 +12,18 @@ func TestSortKeepsParentsWithChildren(t *testing.T) {
 	// parent/child grouping: a container's children always immediately
 	// follow it.
 	results := []*vcs.RepoStatus{
-		{Path: "/r/repo", Type: vcs.Git, Depth: 1},
-		{Path: "/r/container", Type: vcs.Dir, Depth: 1},
-		{Path: "/r/container/b", Type: vcs.Git, Depth: 2},
-		{Path: "/r/container/a", Type: vcs.Git, Depth: 2},
+		{Path: filepath.Join("/r", "repo"), Type: vcs.Git, Depth: 1},
+		{Path: filepath.Join("/r", "container"), Type: vcs.Dir, Depth: 1},
+		{Path: filepath.Join("/r", "container", "b"), Type: vcs.Git, Depth: 2},
+		{Path: filepath.Join("/r", "container", "a"), Type: vcs.Git, Depth: 2},
 	}
 
 	testCases := []struct {
 		expr     string
 		expected []string // expected order of paths relative to /r
 	}{
-		{"name", []string{"container", "container/a", "container/b", "repo"}},
-		{"!name", []string{"repo", "container", "container/b", "container/a"}},
+		{"name", []string{"container", filepath.Join("container", "a"), filepath.Join("container", "b"), "repo"}},
+		{"!name", []string{"repo", "container", filepath.Join("container", "b"), filepath.Join("container", "a")}},
 	}
 
 	for _, tc := range testCases {

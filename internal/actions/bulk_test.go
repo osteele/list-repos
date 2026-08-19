@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -248,8 +249,13 @@ func fakeCommitTool(t *testing.T, tool, body string) string {
 	t.Helper()
 	binDir := t.TempDir()
 	recordFile := filepath.Join(t.TempDir(), "args")
+	name := tool
 	script := "#!/bin/sh\necho \"$@\" >> " + recordFile + "\n" + body + "\n"
-	if err := os.WriteFile(filepath.Join(binDir, tool), []byte(script), 0o755); err != nil {
+	if runtime.GOOS == "windows" {
+		name = tool + ".bat"
+		script = "@echo off\r\necho %* >> \"" + recordFile + "\"\r\n" + body + "\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -286,7 +292,7 @@ func TestPreflightCommitToolsPresent(t *testing.T) {
 }
 
 func TestExecuteBulkCommitUsesAITool(t *testing.T) {
-	recordFile := fakeCommitTool(t, "git-ai-commit", "git add -A && git commit -q -m 'ai: generated message'")
+	recordFile := fakeCommitTool(t, "git-ai-commit", "git add -A && git commit -q -m \"ai: generated message\"")
 
 	localDir := filepath.Join(t.TempDir(), "repo")
 	if err := os.Mkdir(localDir, 0o755); err != nil {

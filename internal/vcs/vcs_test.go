@@ -188,10 +188,10 @@ func TestGetRepoStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a plain jujutsu directory (no git backend)
+	// Create a plain jujutsu directory (non-colocated: .jj only, no .git)
 	jjPlainDir := filepath.Join(tmpDir, "jj-plain")
 	_ = os.Mkdir(jjPlainDir, 0o755)
-	cmd = exec.Command("jj", "init")
+	cmd = exec.Command("jj", "git", "init")
 	cmd.Dir = jjPlainDir
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
@@ -496,14 +496,14 @@ func TestGetJujutsuStatus(t *testing.T) {
 }
 
 func TestGetJujutsuStatusPlain(t *testing.T) {
-	// Test a plain jj repo (created with `jj init`, no git backend)
+	// Test a plain jj repo (created with `jj git init`, non-colocated: no .git)
 	tmpDir, err := os.MkdirTemp("", "test-jj-plain")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	cmd := exec.Command("jj", "init")
+	cmd := exec.Command("jj", "git", "init")
 	cmd.Dir = tmpDir
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
