@@ -23,7 +23,7 @@ For each subdirectory, it shows:
 - **Flexible Sorting**: Sort by multiple fields in any order
 - **Smart Defaults**: Automatically detects repository root when run from within a repo
 - **Multi-VCS Support**: Works with both Git and Jujutsu repositories
-- **Bulk Operations**: Commit, pull, push, or sync every eligible repository in one plan-first, confirmed run
+- **Bulk Operations**: Commit, fix Jujutsu history, pull, push, or sync every eligible repository in one plan-first, confirmed run
 - **Interactive TUI**: Navigate the directory tree and push, pull, commit, sync, repair, or add a GitHub remote
 - **Subtree Rollups**: In the TUI, a directory reports the state of the repositories beneath it, aggregated in the background
 
@@ -149,11 +149,12 @@ Descent stops as soon as a repository is found, so only the outermost repositori
 
 ### Bulk Operations
 
-Four flags act on every *eligible* repository in scope at once — exactly the set the equivalent listing command would print, so they compose with `--filter`, `--sort`, `-r`/`--depth`, and the positional directory:
+Five flags act on every *eligible* repository in scope at once — exactly the set the equivalent listing command would print, so they compose with `--filter`, `--sort`, `-r`/`--depth`, and the positional directory:
 
 | Flag | Acts on |
 |------|---------|
 | `--commit-all` | Dirty repositories |
+| `--fix-all` | Healthy Jujutsu repositories; runs their configured `jj fix` tools over mutable history |
 | `--pull-all` | Repositories with a remote that are behind — or whose behind count is unknown, so a fetch is worthwhile |
 | `--push-all` | Repositories with a remote and known unpushed commits |
 | `--sync-all` | Repositories eligible for pull or push |
@@ -177,7 +178,9 @@ Proceed? [y/N]
 - If stdin is not a terminal and neither `--yes` nor `--dry-run` was given, the run refuses: it prints the plan, explains that confirmation is impossible non-interactively, and exits 2. It never silently proceeds in a pipeline.
 - If nothing is eligible it prints e.g. `Nothing to push.` and exits 0.
 
-Repositories run concurrently through a bounded worker pool, one result line streams out per repository as it finishes (`✓ agent-mail  pushed` / `✗ nib  push failed: …`), and a summary follows (`2 pushed, 1 failed: nib`). A failure in one repository does not abort the others. Exit codes: `0` when all succeeded (or nothing was eligible), `1` when any repository failed, `2` for usage errors and refusals.
+Repositories normally run concurrently through a bounded worker pool, one result line streams out per repository as it finishes (`✓ agent-mail  pushed` / `✗ nib  push failed: …`), and a summary follows (`2 pushed, 1 failed: nib`). A failure in one repository does not abort the others. `--fix-all` is deliberately sequential because each `jj fix` may itself launch several formatters. Exit codes: `0` when all succeeded (or nothing was eligible), `1` when any repository failed, `2` for usage errors and refusals.
+
+`--fix-all` shows the effective formatter names reported by `jj config list` in its plan. `--dry-run` is plan-only because `jj fix` has no conventional dry-run. After each repository completes, gitsync prints the Jujutsu operation summary and a reproducing `jj -R PATH op show -p OPERATION` command so the history rewrite can be reviewed or restored through the operation log. The first version intentionally uses each repository's default `jj fix` revset instead of forwarding a cross-repository revset or fileset.
 
 `--commit-all` never reuses the single-repo canned message. It requires `git-ai-commit` (for Git repositories) and `jj-ai-commit` (for Jujutsu repositories) on `PATH`, which generate a conventional-commit message from the diff. Before prompting, gitsync checks that the tools the eligible set actually needs are available; if one is missing it refuses — naming the tool and the affected repositories — and exits 2, rather than partially proceeding.
 

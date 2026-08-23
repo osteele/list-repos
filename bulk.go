@@ -32,6 +32,9 @@ func runBulk(op actions.BulkOp, results []*vcs.RepoStatus, dryRun, yes bool, std
 			return 2
 		}
 	}
+	if op == actions.BulkFix {
+		actions.AnnotateFixTools(items)
+	}
 
 	actions.RenderPlan(stdout, op, items)
 
@@ -111,6 +114,10 @@ func executeBulk(op actions.BulkOp, items []actions.PlanItem, dryRun bool, stdou
 				return
 			}
 			_, _ = fmt.Fprintf(stdout, "✓ %s  would %s:%s\n", name, op, indented(r.Output))
+			return
+		}
+		if op == actions.BulkFix && strings.TrimSpace(r.Output) != "" {
+			_, _ = fmt.Fprintf(stdout, "✓ %s  %s:%s\n", name, op.PastTense(), indented(r.Output))
 			return
 		}
 		_, _ = fmt.Fprintf(stdout, "✓ %s  %s\n", name, op.PastTense())

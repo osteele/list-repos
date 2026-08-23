@@ -23,6 +23,10 @@ const (
 	// costs nothing when the tool is quick and is why the prompt must never
 	// block on it.
 	DraftTimeout = 6 * time.Minute
+	// FixTimeout bounds jj fix, which may run several formatters across a
+	// repository's mutable history. It is local work but can outlive both the
+	// status and network budgets on a large repository.
+	FixTimeout = 15 * time.Minute
 )
 
 // RunVCS runs a git/jj command in dir with a timeout and a non-interactive

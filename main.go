@@ -25,6 +25,7 @@ type options struct {
 	recursive   bool
 	depth       int
 	commitAll   bool
+	fixAll      bool
 	pullAll     bool
 	pushAll     bool
 	syncAll     bool
@@ -38,6 +39,8 @@ func (opts options) bulkOp() (actions.BulkOp, bool) {
 	switch {
 	case opts.commitAll:
 		return actions.BulkCommit, true
+	case opts.fixAll:
+		return actions.BulkFix, true
 	case opts.pullAll:
 		return actions.BulkPull, true
 	case opts.pushAll:
@@ -70,6 +73,7 @@ func parseArgs(argv []string, stderr io.Writer) (options, error) {
 	fs.BoolVar(&opts.recursive, "r", false, "Descend into non-repository directories (short form)")
 	fs.IntVar(&opts.depth, "depth", 4, "Cap recursive descent at this many levels (implies -r)")
 	fs.BoolVar(&opts.commitAll, "commit-all", false, "Commit every dirty repository with an AI-generated message")
+	fs.BoolVar(&opts.fixAll, "fix-all", false, "Run jj fix in every healthy Jujutsu repository")
 	fs.BoolVar(&opts.pullAll, "pull-all", false, "Pull every repository that is or may be behind")
 	fs.BoolVar(&opts.pushAll, "push-all", false, "Push every repository with unpushed commits")
 	fs.BoolVar(&opts.syncAll, "sync-all", false, "Sync (pull then push) every eligible repository")
@@ -117,13 +121,13 @@ func parseArgs(argv []string, stderr io.Writer) (options, error) {
 	// The bulk operations are mutually exclusive with each other and with
 	// the interactive TUI.
 	bulkCount := 0
-	for _, b := range []bool{opts.commitAll, opts.pullAll, opts.pushAll, opts.syncAll} {
+	for _, b := range []bool{opts.commitAll, opts.fixAll, opts.pullAll, opts.pushAll, opts.syncAll} {
 		if b {
 			bulkCount++
 		}
 	}
 	if bulkCount > 1 {
-		err := fmt.Errorf("--commit-all, --pull-all, --push-all, and --sync-all are mutually exclusive")
+		err := fmt.Errorf("--commit-all, --fix-all, --pull-all, --push-all, and --sync-all are mutually exclusive")
 		_, _ = fmt.Fprintf(fs.Output(), "gitsync: %v\n", err)
 		return options{}, err
 	}

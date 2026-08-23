@@ -21,6 +21,9 @@ func TestBulkFlagsMutuallyExclusive(t *testing.T) {
 	if _, err := parseArgs([]string{"--commit-all", "--sync-all"}, io.Discard); err == nil {
 		t.Fatal("expected --commit-all with --sync-all to be a usage error")
 	}
+	if _, err := parseArgs([]string{"--fix-all", "--push-all"}, io.Discard); err == nil {
+		t.Fatal("expected --fix-all with --push-all to be a usage error")
+	}
 	if _, err := parseArgs([]string{"--push-all", "-i"}, io.Discard); err == nil {
 		t.Fatal("expected --push-all with -i to be a usage error")
 	}
@@ -32,6 +35,25 @@ func TestBulkFlagsMutuallyExclusive(t *testing.T) {
 	op, ok := opts.bulkOp()
 	if !ok || op != actions.BulkPush || !opts.dryRun || !opts.yes {
 		t.Fatalf("unexpected options: %+v", opts)
+	}
+}
+
+func TestRunBulkFixDryRunIsPlanOnly(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	results := []*vcs.RepoStatus{
+		{Path: "/work/jj-project", Type: vcs.Jujutsu},
+		{Path: "/work/git-project", Type: vcs.Git},
+	}
+	code := runBulk(actions.BulkFix, results, true, false, nonTTYStdin(t), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d (stderr: %s)", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Will fix 1 repository:") || !strings.Contains(out, "jj-project") {
+		t.Fatalf("expected a Jujutsu-only plan, got %q", out)
+	}
+	if strings.Contains(out, "git-project") || strings.Contains(out, "processed") {
+		t.Fatalf("dry-run must neither select Git nor execute fix, got %q", out)
 	}
 }
 

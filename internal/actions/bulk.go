@@ -25,6 +25,8 @@ const (
 	// BulkPull pulls every repository with a remote that is behind or whose
 	// behind count is unknown (worth a fetch to find out).
 	BulkPull
+	// BulkFix runs jj fix in every healthy Jujutsu repository.
+	BulkFix
 	// BulkPush pushes every repository with a remote and known unpushed
 	// commits.
 	BulkPush
@@ -39,6 +41,8 @@ func (op BulkOp) String() string {
 		return "commit"
 	case BulkPull:
 		return "pull"
+	case BulkFix:
+		return "fix"
 	case BulkPush:
 		return "push"
 	case BulkSync:
@@ -55,6 +59,8 @@ func (op BulkOp) PastTense() string {
 		return "committed"
 	case BulkPull:
 		return "pulled"
+	case BulkFix:
+		return "processed"
 	case BulkPush:
 		return "pushed"
 	case BulkSync:
@@ -76,6 +82,8 @@ func Eligible(op BulkOp, s *vcs.RepoStatus) bool {
 	switch op {
 	case BulkCommit:
 		return s.Dirty
+	case BulkFix:
+		return s.Type == vcs.Jujutsu && s.Error == "" && !s.Corrupted
 	case BulkPull:
 		return s.Remote && (s.Behind.Positive() || !s.Behind.Known)
 	case BulkPush:
@@ -117,6 +125,8 @@ func reasonFor(op BulkOp, s *vcs.RepoStatus) string {
 		return "dirty"
 	case BulkPull:
 		return behind()
+	case BulkFix:
+		return "Jujutsu repository"
 	case BulkPush:
 		return fmt.Sprintf("ahead %d", s.Ahead.N)
 	case BulkSync:
@@ -151,6 +161,68 @@ func RenderPlan(w io.Writer, op BulkOp, items []PlanItem) {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", filepath.Base(item.Status.Path), item.Reason)
 	}
 	_ = tw.Flush()
+}
+
+// AnnotateFixTools replaces each fix plan item's generic reason with the
+// effective formatter names reported by jj's versioned config interface.
+// Discovery failures remain visible in the plan and do not suppress sibling
+// repositories; execution will independently report the same repository's
+// failure.
+func AnnotateFixTools(items []PlanItem) {
+	for i := range items {
+		tools, err := ConfiguredFixTools(items[i].Status.Path)
+		switch {
+		case err != nil:
+			items[i].Reason = "tools unknown: " + firstLine(err.Error())
+		case len(tools) == 0:
+			items[i].Reason = "no configured tools"
+		default:
+			items[i].Reason = strings.Join(tools, ", ")
+		}
+	}
+}
+
+func firstLine(s string) string {
+	if line, _, ok := strings.Cut(s, "\n"); ok {
+		return line
+	}
+	return s
+}
+
+// ConfiguredFixTools asks jj for the effective fix configuration and returns
+// the tool names. It consumes CLI output instead of reading Jujutsu's config
+// files, whose locations and merge rules belong to Jujutsu.
+func ConfiguredFixTools(path string) ([]string, error) {
+	output, err := vcs.RunVCSOutput(path, "jj", "config", "list", "fix.tools", "-T", `name ++ "\n"`)
+	if err != nil {
+		return nil, fmt.Errorf("list jj fix tools: %w", err)
+	}
+	return parseFixToolNames(string(output))
+}
+
+func parseFixToolNames(output string) ([]string, error) {
+	seen := map[string]bool{}
+	var tools []string
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		const prefix = "fix.tools."
+		nameAndField, ok := strings.CutPrefix(line, prefix)
+		if !ok {
+			return nil, fmt.Errorf("unexpected jj config key %q", line)
+		}
+		name, _, ok := strings.Cut(nameAndField, ".")
+		if !ok || name == "" {
+			return nil, fmt.Errorf("unexpected jj fix tool key %q", line)
+		}
+		if !seen[name] {
+			seen[name] = true
+			tools = append(tools, name)
+		}
+	}
+	sort.Strings(tools)
+	return tools, nil
 }
 
 // CommitToolFor names the AI commit-message tool a repository type
@@ -200,22 +272,18 @@ type Result struct {
 	Err    error
 }
 
-// ExecuteBulk runs the operation on every planned item concurrently through
-// a bounded worker pool (the same bound the scanner uses), streaming each
-// result to onResult in completion order. A failure in one repository does
-// not abort the others. dryRun only affects commit, which passes the AI
-// tool's own dry-run flag through so the would-be messages are shown.
+// ExecuteBulk runs the operation on every planned item through a bounded
+// worker pool, streaming each result to onResult in completion order. Fix is
+// deliberately sequential because each jj process may itself launch several
+// formatters; the other operations use the scanner's CPU-sized bound. A
+// failure in one repository does not abort the others. dryRun only affects
+// commit, which passes the AI tool's own dry-run flag through so the would-be
+// messages are shown.
 func ExecuteBulk(op BulkOp, items []PlanItem, dryRun bool, onResult func(Result)) (succeeded, failed int) {
 	if len(items) == 0 {
 		return 0, 0
 	}
-	workerCount := runtime.NumCPU()
-	if workerCount < 1 {
-		workerCount = 1
-	}
-	if len(items) < workerCount {
-		workerCount = len(items)
-	}
+	workerCount := workerCountFor(op, len(items))
 
 	jobs := make(chan PlanItem)
 	results := make(chan Result, len(items))
@@ -252,12 +320,28 @@ func ExecuteBulk(op BulkOp, items []PlanItem, dryRun bool, onResult func(Result)
 	return succeeded, failed
 }
 
+func workerCountFor(op BulkOp, itemCount int) int {
+	if op == BulkFix {
+		return 1
+	}
+	workerCount := runtime.NumCPU()
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if itemCount < workerCount {
+		workerCount = itemCount
+	}
+	return workerCount
+}
+
 func runOne(op BulkOp, path string, dryRun bool) (string, error) {
 	switch op {
 	case BulkCommit:
 		return actionCommitAI(path, dryRun)
 	case BulkPull:
 		return "", ActionPull(path)
+	case BulkFix:
+		return actionFix(path)
 	case BulkPush:
 		return "", ActionPush(path)
 	case BulkSync:
@@ -265,6 +349,41 @@ func runOne(op BulkOp, path string, dryRun bool) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown bulk operation")
 	}
+}
+
+// actionFix runs Jujutsu's configured fix tools and reports the operation
+// that contains the rewrite. The operation is Jujutsu's recoverable
+// checkpoint; the printed command gives the user a direct patch review path.
+func actionFix(path string) (string, error) {
+	tools, err := ConfiguredFixTools(path)
+	if err != nil {
+		return "", err
+	}
+	if len(tools) == 0 {
+		return "", fmt.Errorf("no jj fix tools configured")
+	}
+	output, err := vcs.RunVCS(path, vcs.FixTimeout, "jj", "fix")
+	if err != nil {
+		return "", fmt.Errorf("jj fix failed: %w\n%s", err, output)
+	}
+	opOutput, err := vcs.RunVCSOutput(path, "jj", "op", "log", "--at-op=@", "--ignore-working-copy", "-G", "-n", "1", "-T", `id.short() ++ "\n"`)
+	if err != nil {
+		return "", fmt.Errorf("jj fix completed but its operation could not be identified: %w", err)
+	}
+	opID := strings.TrimSpace(string(opOutput))
+	stat, err := vcs.RunVCS(path, vcs.StatusTimeout, "jj", "op", "show", "--at-op=@", "--ignore-working-copy", "--stat", opID)
+	if err != nil {
+		return "", fmt.Errorf("jj fix completed in operation %s but its diff could not be shown: %w\n%s", opID, err, stat)
+	}
+	parts := []string{strings.TrimSpace(string(output)), strings.TrimSpace(string(stat))}
+	var visible []string
+	for _, part := range parts {
+		if part != "" {
+			visible = append(visible, part)
+		}
+	}
+	visible = append(visible, fmt.Sprintf("Review: jj -R %q op show -p %s", path, opID))
+	return strings.Join(visible, "\n"), nil
 }
 
 // actionCommitAI commits with an AI-generated message from git-ai-commit or

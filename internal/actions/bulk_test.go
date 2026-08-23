@@ -29,6 +29,11 @@ func TestEligible(t *testing.T) {
 		{"commit dirty", BulkCommit, &vcs.RepoStatus{Type: vcs.Git, Dirty: true}, true},
 		{"commit clean", BulkCommit, &vcs.RepoStatus{Type: vcs.Git}, false},
 
+		{"fix jj", BulkFix, &vcs.RepoStatus{Type: vcs.Jujutsu}, true},
+		{"fix skips git", BulkFix, &vcs.RepoStatus{Type: vcs.Git}, false},
+		{"fix skips scan error", BulkFix, &vcs.RepoStatus{Type: vcs.Jujutsu, Error: "status failed"}, false},
+		{"fix skips corrupted", BulkFix, &vcs.RepoStatus{Type: vcs.Jujutsu, Corrupted: true}, false},
+
 		{"pull behind", BulkPull, &vcs.RepoStatus{Type: vcs.Git, Remote: true, Behind: count(2)}, true},
 		{"pull behind unknown", BulkPull, &vcs.RepoStatus{Type: vcs.Git, Remote: true, Behind: unknown}, true},
 		{"pull up to date", BulkPull, &vcs.RepoStatus{Type: vcs.Git, Remote: true, Behind: count(0)}, false},
@@ -88,6 +93,75 @@ func TestPlan(t *testing.T) {
 	})
 	if len(sync) != 1 || sync[0].Reason != "ahead 1, behind 3" {
 		t.Fatalf("unexpected sync plan: %+v", sync)
+	}
+
+	fix := Plan(BulkFix, []*vcs.RepoStatus{
+		{Path: "/work/jj", Type: vcs.Jujutsu},
+		{Path: "/work/git", Type: vcs.Git},
+	})
+	if len(fix) != 1 || fix[0].Reason != "Jujutsu repository" {
+		t.Fatalf("unexpected fix plan: %+v", fix)
+	}
+}
+
+func TestParseFixToolNames(t *testing.T) {
+	output := strings.Join([]string{
+		"fix.tools.ruff.command",
+		"fix.tools.ruff.patterns",
+		"fix.tools.gofmt.command",
+	}, "\n")
+	tools, err := parseFixToolNames(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(tools, ","); got != "gofmt,ruff" {
+		t.Fatalf("unexpected tools %q", got)
+	}
+	if _, err := parseFixToolNames("fix.tool.ruff.command"); err == nil {
+		t.Fatal("expected an unexpected config key to be diagnosed")
+	}
+}
+
+func TestFixUsesOneWorker(t *testing.T) {
+	if got := workerCountFor(BulkFix, 20); got != 1 {
+		t.Fatalf("fix worker count = %d, want 1", got)
+	}
+	if got := workerCountFor(BulkPush, 2); got < 1 || got > 2 {
+		t.Fatalf("push worker count = %d, want 1 or 2", got)
+	}
+}
+
+func TestActionFixReportsReviewOperation(t *testing.T) {
+	repo := t.TempDir()
+	runJJ := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("jj", args...)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("jj %s failed: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	runJJ("git", "init", "--colocate")
+	runJJ("config", "set", "--repo", "fix.tools.git-stripspace.command", `["git", "stripspace"]`)
+	runJJ("config", "set", "--repo", "fix.tools.git-stripspace.patterns", `["glob:'**/*.txt'"]`)
+
+	path := filepath.Join(repo, "note.txt")
+	if err := os.WriteFile(path, []byte("hello   \n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output, err := actionFix(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "Review: jj -R") || !strings.Contains(output, "op show -p") {
+		t.Fatalf("fix result lacks review provenance:\n%s", output)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "hello\n" {
+		t.Fatalf("configured fixer did not run: %q", content)
 	}
 }
 
