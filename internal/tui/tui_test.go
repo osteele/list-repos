@@ -168,7 +168,7 @@ func TestRepairRequiresConfirmation(t *testing.T) {
 	if um.pending == nil {
 		t.Fatal("expected repair to await confirmation")
 	}
-	if !strings.Contains(um.pending.prompt, "repair") {
+	if !strings.Contains(um.pending.prompt, "Repair") {
 		t.Fatalf("expected a repair prompt, got %q", um.pending.prompt)
 	}
 	if um.items[0].busy {
@@ -227,6 +227,31 @@ func TestCommitInputCancels(t *testing.T) {
 	}
 	if cancelled.items[0].busy {
 		t.Fatal("cancelled commit must not mark the item busy")
+	}
+}
+
+func TestCommitInputShowsEntireMultilineMessage(t *testing.T) {
+	m := tuiModelWithDirs(t, 1)
+	m.width, m.height = 64, 30
+	message := "fix: preserve the generated subject\n\n" +
+		"Explain the first part of the change without truncating the generated body.\n" +
+		"Final line remains visible in the expanding editor."
+	_ = m.commitInput.Focus()
+	m.commitInput.SetValue(message)
+	m.commitInput.CursorEnd()
+	m.resizeCommitInput()
+
+	if got := m.commitInput.Value(); got != message {
+		t.Fatalf("commit editor truncated the message:\n%q", got)
+	}
+	view := stripANSI(m.View())
+	for _, want := range []string{"Commit message", "fix: preserve the generated subject", "Final line remains visible"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("commit editor did not display %q:\n%s", want, view)
+		}
+	}
+	if m.commitInput.Height() <= 1 {
+		t.Fatalf("multiline commit editor did not expand: height=%d", m.commitInput.Height())
 	}
 }
 
@@ -354,6 +379,62 @@ func TestViewFitsWindowHeight(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestConfirmationPromptWrapsAndReservesItsLines(t *testing.T) {
+	const width, height = 52, 18
+	m := tuiModelWithDirs(t, 12)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	m = updated.(model)
+	m.pending = &pendingAction{prompt: "Push 4 repositories in backend-infrastructure (ai-api-egress, subdomain-router, tailscale-diagram, …)? (y/n)"}
+
+	wrapped := m.wrappedPendingPrompt()
+	if lipgloss.Height(wrapped) < 2 {
+		t.Fatalf("prompt did not wrap:\n%s", wrapped)
+	}
+	for _, line := range strings.Split(wrapped, "\n") {
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("wrapped prompt line is %d cells, wider than %d: %q", got, width, line)
+		}
+	}
+	for _, want := range []string{"backend-infrastructure", "tailscale-diagram", "(y/n)"} {
+		if !strings.Contains(wrapped, want) {
+			t.Fatalf("wrapped prompt lost %q:\n%s", want, wrapped)
+		}
+	}
+	view := m.View()
+	if got := lipgloss.Height(view); got != height {
+		t.Fatalf("wrapped confirmation view height = %d, want %d:\n%s", got, height, view)
+	}
+}
+
+func TestShortHelpStaysOnBottomLineAsRowsChange(t *testing.T) {
+	const height = 18
+	m := tuiModelWithDirs(t, 2)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: height})
+	m = updated.(model)
+
+	assertBottomHelp := func(state model) {
+		t.Helper()
+		view := state.View()
+		if got := lipgloss.Height(view); got != height {
+			t.Fatalf("view height = %d, want %d:\n%s", got, height, view)
+		}
+		lines := strings.Split(view, "\n")
+		if !strings.Contains(lines[len(lines)-1], "↑/k up") {
+			t.Fatalf("short help is not the last line:\n%s", view)
+		}
+	}
+
+	assertBottomHelp(m)
+	for i := 0; i < 5; i++ {
+		m.items = append(m.items, tuiItem{
+			path:   filepath.Join(m.scanDir, fmt.Sprintf("revealed-%d", i)),
+			status: &vcs.RepoStatus{Type: vcs.Git},
+			depth:  1,
+		})
+	}
+	assertBottomHelp(m)
 }
 
 func TestIconCombinesBadges(t *testing.T) {
@@ -614,11 +695,39 @@ func TestRollupText(t *testing.T) {
 		{"mixed", rollup{repos: 14, dirty: 3, ahead: 8}, "14 repos, 3 dirty, 8 ahead"},
 		{"behind too", rollup{repos: 2, behind: 1}, "2 repos, 1 behind"},
 		{"unknown ahead", rollup{repos: 3, unknown: 2}, "3 repos, 2 ahead ?"},
+		{"nested breakdown", rollup{repos: 42, direct: 31, nested: 11}, "42 repos (31 direct + 11 nested)"},
 	}
 	for _, tc := range cases {
 		if got := tc.r.text(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestLoadRollupSeparatesDirectAndNestedRepositories(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"direct", filepath.Join("container", "nested")} {
+		repo := filepath.Join(root, rel)
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("git", "-C", repo, "init").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v\n%s", err, out)
+		}
+	}
+	msg, ok := loadRollupCmd(root, 7)().(rollupMsg)
+	if !ok {
+		t.Fatal("expected a rollup message")
+	}
+	if msg.err != nil {
+		t.Fatal(msg.err)
+	}
+	if msg.seq != 7 {
+		t.Fatalf("rollup sequence = %d, expected 7", msg.seq)
+	}
+	want := rollup{repos: 2, direct: 1, nested: 1}
+	if msg.r != want {
+		t.Fatalf("rollup = %+v, expected %+v", msg.r, want)
 	}
 }
 
@@ -634,7 +743,7 @@ func TestContainerShowsRollupWhenItArrives(t *testing.T) {
 		t.Fatalf("expected the shallow count before rollup, got %q", got)
 	}
 
-	updated, _ = um.Update(rollupMsg{path: path, r: rollup{repos: 3, dirty: 2, ahead: 1}})
+	updated, _ = um.Update(rollupMsg{path: path, seq: um.items[0].rollupSeq, r: rollup{repos: 3, dirty: 2, ahead: 1}})
 	um = updated.(model)
 	if got := um.items[0].statusText(); got != "3 repos, 2 dirty, 1 ahead" {
 		t.Fatalf("expected the rollup once it arrives, got %q", got)
@@ -680,7 +789,7 @@ func TestTotalAggregatesWithoutDoubleCounting(t *testing.T) {
 	}
 	// items[0] has a remote but no known ahead count, so it also counts as
 	// one unverified repository.
-	want := rollup{repos: 7, dirty: 2, ahead: 3, unknown: 1}
+	want := rollup{repos: 7, direct: 1, dirty: 2, ahead: 3, unknown: 1}
 	if tot != want {
 		t.Fatalf("total = %+v, want %+v", tot, want)
 	}
@@ -827,6 +936,33 @@ func TestEscHidesExpandedHelp(t *testing.T) {
 	}
 }
 
+func TestExpandedHelpIsModalOverlay(t *testing.T) {
+	m := tuiModelWithDirs(t, 8)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = updated.(model)
+	listHeight := m.listHeight()
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	um := updated.(model)
+	view := um.View()
+	if !strings.Contains(view, "Keyboard Shortcuts") || !strings.Contains(view, "describe changes") {
+		t.Fatalf("expected the key overlay:\n%s", view)
+	}
+	if got := lipgloss.Height(view); got != um.height {
+		t.Fatalf("overlay height = %d, expected terminal height %d", got, um.height)
+	}
+	if um.listHeight() != listHeight {
+		t.Fatalf("opening help changed list height from %d to %d", listHeight, um.listHeight())
+	}
+
+	// Navigation keys do not act on the list behind the modal.
+	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyDown})
+	um = updated.(model)
+	if um.cursor != 0 || !um.help.ShowAll {
+		t.Fatal("the help overlay must intercept non-dismissal keys")
+	}
+}
+
 // TestDetailColumnHoldsAcrossDepths is the regression for indenting the
 // glyphs: a child's icons shift right with the nesting, but the detail
 // column must not move with them.
@@ -965,13 +1101,11 @@ func TestDraftFromAClosedPromptIsIgnored(t *testing.T) {
 	}
 }
 
-// TestStartCommitRefusesNonRepository: the commit prompt must not open on a
-// directory row, and above all no AI draft may be requested for one —
-// that would invoke an external LLM tool in a directory that is not a
-// repository at all.
-func TestStartCommitRefusesNonRepository(t *testing.T) {
+// A directory row represents a recursive scope. Lowercase c plans commits
+// beneath that directory instead of invoking one AI tool in the directory.
+func TestStartCommitPlansSelectedDirectory(t *testing.T) {
 	m := tuiModelWithDirs(t, 1)
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	um := updated.(model)
 	if um.commitInput.Focused() {
 		t.Fatal("the commit prompt must not open on a directory row")
@@ -979,8 +1113,223 @@ func TestStartCommitRefusesNonRepository(t *testing.T) {
 	if um.drafting {
 		t.Fatal("no draft may start for a directory")
 	}
-	if !strings.Contains(um.message, "not a repository") {
-		t.Fatalf("expected a refusal message, got %q", um.message)
+	if cmd == nil || !um.items[0].busy || !strings.Contains(um.message, "planning commit in repo00") {
+		t.Fatalf("expected a directory-scoped commit plan: busy=%v message=%q", um.items[0].busy, um.message)
+	}
+	plan, ok := cmd().(bulkPlanMsg)
+	if !ok || plan.op != actions.BulkCommit || plan.scope != um.items[0].path {
+		t.Fatalf("commit plan = %#v", plan)
+	}
+}
+
+func TestDescribeChangesShowsToolOutput(t *testing.T) {
+	m := tuiModelWithGitRepo(t)
+	m.width, m.height = 80, 20
+	m.items[0].status = &vcs.RepoStatus{Type: vcs.Git, Dirty: true}
+	repo := m.items[0].path
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.name", "Test User"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "commit.gpgSign", "false"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	binDir := t.TempDir()
+	toolPath := filepath.Join(binDir, "git-ai-commit")
+	callsPath := filepath.Join(t.TempDir(), "description-calls")
+	payload := `{"schemaVersion":"ai-describe/v1","tool":{"name":"git-ai-commit"},"model":{"requested":"auto","display":"mock/model"},"results":[{"target":{"kind":"working-copy","display":"working copy"},"previousDescription":"","description":"fix: explain the dirty change","files":[{"status":"added","path":"note.txt"}],"diffBytes":42,"applied":false}]}`
+	script := "#!/bin/sh\nprintf 'call\\n' >> \"$GITSYNC_DESCRIPTION_CALLS\"\nprintf '%s' '" + payload + "'\n"
+	if err := os.WriteFile(toolPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GITSYNC_DESCRIPTION_CALLS", callsPath)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	um := updated.(model)
+	if cmd == nil || !um.items[0].busy {
+		t.Fatal("expected d to start the installed description tool")
+	}
+	if um.message != "describing changes in repo00…" {
+		t.Fatalf("description status implies the wrong operation: %q", um.message)
+	}
+	updated, _ = um.Update(cmd())
+	um = updated.(model)
+	if um.descriptionView == nil || um.items[0].busy {
+		t.Fatalf("expected the completed description to open and clear busy state: detail=%v description=%v busy=%v message=%q", um.showDetail, um.descriptionView != nil, um.items[0].busy, um.message)
+	}
+	view := stripANSI(um.View())
+	for _, want := range []string{"git-ai-commit", "mock/model", "fix: explain the dirty change", "c commit and return"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("description view missing %q:\n%s", want, view)
+		}
+	}
+
+	// Leaving and reopening the view with the same diff must reuse the
+	// session cache instead of invoking the AI tool again.
+	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	um = updated.(model)
+	updated, cmd = um.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	um = updated.(model)
+	updated, _ = um.Update(cmd())
+	um = updated.(model)
+	calls, err := os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "call\n" {
+		t.Fatalf("unchanged description invoked the AI tool again: %q", calls)
+	}
+
+	// The ordinary commit prompt also uses the cached description after the
+	// user leaves the view, provided the diff hash still matches.
+	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	um = updated.(model)
+	updated, cmd = um.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	um = updated.(model)
+	if cmd == nil || !um.commitInput.Focused() || !um.drafting {
+		t.Fatalf("c did not open the drafting prompt: focused=%v drafting=%v", um.commitInput.Focused(), um.drafting)
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) < 2 {
+		t.Fatalf("commit prompt command = %T, expected focus and draft batch", cmd())
+	}
+	draft := batch[len(batch)-1]()
+	updated, _ = um.Update(draft)
+	um = updated.(model)
+	if um.commitInput.Value() != "fix: explain the dirty change" {
+		t.Fatalf("commit prompt did not use cached description: %q", um.commitInput.Value())
+	}
+	calls, err = os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "call\n" {
+		t.Fatalf("cached commit draft invoked the AI tool again: %q", calls)
+	}
+
+	updated, cmd = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	um = updated.(model)
+	if cmd == nil || !um.items[0].busy {
+		t.Fatalf("enter did not start the commit: busy=%v", um.items[0].busy)
+	}
+	updated, _ = um.Update(cmd())
+	um = updated.(model)
+	if um.items[0].busy || !strings.Contains(um.message, "commit repo00 done") {
+		t.Fatalf("commit did not finish: busy=%v message=%q", um.items[0].busy, um.message)
+	}
+	if _, ok := um.descriptionCache[repo]; ok {
+		t.Fatal("successful commit did not evict the cached description")
+	}
+	logCmd := exec.Command("git", "-C", repo, "log", "-1", "--pretty=%B")
+	output, err := logCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(output)) != "fix: explain the dirty change" {
+		t.Fatalf("committed message = %q", output)
+	}
+}
+
+func TestCancelledCommitDraftWarmsDescriptionCache(t *testing.T) {
+	m := tuiModelWithGitRepo(t)
+	m.width, m.height = 72, 30
+	m.items[0].status = &vcs.RepoStatus{Type: vcs.Git, Dirty: true}
+	repo := m.items[0].path
+	changedPath := filepath.Join(repo, "note.txt")
+	if err := os.WriteFile(changedPath, []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	callsPath := filepath.Join(t.TempDir(), "description-calls")
+	payload := `{"schemaVersion":"ai-describe/v1","tool":{"name":"git-ai-commit"},"model":{"requested":"auto","display":"mock/model"},"results":[{"target":{"kind":"working-copy","display":"working copy"},"previousDescription":"","description":"fix: cache the generated draft\n\nExplain why the cache is safe.\nKeep this final line visible.","files":[{"status":"added","path":"note.txt"}],"diffBytes":73,"applied":false}]}`
+	script := "#!/bin/sh\nprintf 'call\\n' >> \"$GITSYNC_DESCRIPTION_CALLS\"\nprintf '%s' '" + payload + "'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git-ai-commit"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GITSYNC_DESCRIPTION_CALLS", callsPath)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	um := updated.(model)
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) < 2 {
+		t.Fatalf("commit prompt command = %T, expected focus and draft batch", cmd())
+	}
+	updated, _ = um.Update(batch[len(batch)-1]())
+	um = updated.(model)
+	if _, ok := um.descriptionCache[repo]; !ok {
+		t.Fatal("completed commit draft did not warm the description cache")
+	}
+	if !strings.Contains(stripANSI(um.View()), "Keep this final line visible.") {
+		t.Fatalf("commit prompt did not show the full generated message:\n%s", stripANSI(um.View()))
+	}
+
+	// Canceling retains the generated description. Opening d uses the same
+	// structured result without invoking the tool a second time.
+	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	um = updated.(model)
+	updated, cmd = um.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	um = updated.(model)
+	updated, _ = um.Update(cmd())
+	um = updated.(model)
+	if um.descriptionView == nil {
+		t.Fatal("d did not open the description cached by the canceled commit prompt")
+	}
+	calls, err := os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "call\n" {
+		t.Fatalf("d regenerated the canceled commit draft: %q", calls)
+	}
+
+	// The same entry also seeds another c. Touching the working tree changes
+	// the digest, so the next d must generate a fresh result.
+	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	um = updated.(model)
+	updated, cmd = um.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	um = updated.(model)
+	batch = cmd().(tea.BatchMsg)
+	updated, _ = um.Update(batch[len(batch)-1]())
+	um = updated.(model)
+	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	um = updated.(model)
+	if err := os.WriteFile(changedPath, []byte("different dirty content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	updated, cmd = um.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	um = updated.(model)
+	updated, _ = um.Update(cmd())
+	um = updated.(model)
+	calls, err = os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(calls) != "call\ncall\n" {
+		t.Fatalf("changed files did not invalidate the cached draft: %q", calls)
+	}
+}
+
+func TestDescribeChangesRequiresDirtyRepository(t *testing.T) {
+	m := tuiModelWithGitRepo(t)
+	m.items[0].status = &vcs.RepoStatus{Type: vcs.Git}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	um := updated.(model)
+	if cmd == nil {
+		// clearAfter is still a command; only the external description command
+		// must not start.
+		t.Fatal("expected the refusal message to have a dismissal timer")
+	}
+	if !strings.Contains(um.message, "no dirty changes") || um.items[0].busy {
+		t.Fatalf("clean repository was not refused: message=%q busy=%v", um.message, um.items[0].busy)
 	}
 }
 
@@ -1016,7 +1365,7 @@ func TestRollupFailureKeepsShallowCount(t *testing.T) {
 	updated, _ := m.Update(statusMsg{path: path, status: &vcs.RepoStatus{Path: path, Type: vcs.Dir, NestedRepos: 3}})
 	um := updated.(model)
 
-	updated, _ = um.Update(rollupMsg{path: path, err: errors.New("subtree unreadable")})
+	updated, _ = um.Update(rollupMsg{path: path, seq: um.items[0].rollupSeq, err: errors.New("subtree unreadable")})
 	um = updated.(model)
 	if um.items[0].rolledUp {
 		t.Fatal("a failed subtree scan must not count as rolled up")

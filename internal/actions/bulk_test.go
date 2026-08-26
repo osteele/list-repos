@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -131,6 +132,26 @@ func TestFixUsesOneWorker(t *testing.T) {
 	}
 }
 
+func TestExecuteBulkProgressReportsActualStarts(t *testing.T) {
+	items := []PlanItem{
+		{Status: &vcs.RepoStatus{Path: "/work/alpha"}},
+		{Status: &vcs.RepoStatus{Path: "/work/beta"}},
+	}
+	var started, completed []string
+	succeeded, failed := ExecuteBulkWithProgress(BulkOp(99), items, false,
+		func(item PlanItem) { started = append(started, filepath.Base(item.Status.Path)) },
+		func(result Result) { completed = append(completed, filepath.Base(result.Item.Status.Path)) },
+	)
+	if succeeded != 0 || failed != 2 {
+		t.Fatalf("unexpected result totals: %d succeeded, %d failed", succeeded, failed)
+	}
+	sort.Strings(started)
+	sort.Strings(completed)
+	if strings.Join(started, ",") != "alpha,beta" || strings.Join(completed, ",") != "alpha,beta" {
+		t.Fatalf("progress callbacks started=%v completed=%v", started, completed)
+	}
+}
+
 func TestActionFixReportsReviewOperation(t *testing.T) {
 	repo := t.TempDir()
 	runJJ := func(args ...string) {
@@ -149,12 +170,20 @@ func TestActionFixReportsReviewOperation(t *testing.T) {
 	if err := os.WriteFile(path, []byte("hello   \n\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	output, err := actionFix(repo)
+	runJJ("commit", "-m", "first note")
+	secondPath := filepath.Join(repo, "second.txt")
+	if err := os.WriteFile(secondPath, []byte("world   \n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ActionFix(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output, "Review: jj -R") || !strings.Contains(output, "op show -p") {
-		t.Fatalf("fix result lacks review provenance:\n%s", output)
+	if result.ChangedRevisions != 2 {
+		t.Fatalf("changed revisions = %d, want 2", result.ChangedRevisions)
+	}
+	if !strings.Contains(result.Output, "Review: jj -R") || !strings.Contains(result.Output, "op show -p") {
+		t.Fatalf("fix result lacks review provenance:\n%s", result.Output)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -162,6 +191,13 @@ func TestActionFixReportsReviewOperation(t *testing.T) {
 	}
 	if string(content) != "hello\n" {
 		t.Fatalf("configured fixer did not run: %q", content)
+	}
+	secondContent, err := os.ReadFile(secondPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(secondContent) != "world\n" {
+		t.Fatalf("configured fixer did not run on second revision: %q", secondContent)
 	}
 }
 
@@ -280,7 +316,7 @@ func TestExecuteBulkPullEndToEnd(t *testing.T) {
 
 	// Push the commit, then add a second commit from another clone so the
 	// local repo is behind.
-	if _, err := runOne(BulkPush, localDir, false); err != nil {
+	if _, _, err := runOne(BulkPush, localDir, false); err != nil {
 		t.Fatal(err)
 	}
 	cloneDir := filepath.Join(t.TempDir(), "clone")

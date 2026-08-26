@@ -24,7 +24,7 @@ For each subdirectory, it shows:
 - **Smart Defaults**: Automatically detects repository root when run from within a repo
 - **Multi-VCS Support**: Works with both Git and Jujutsu repositories
 - **Bulk Operations**: Commit, fix Jujutsu history, pull, push, or sync every eligible repository in one plan-first, confirmed run
-- **Interactive TUI**: Navigate the directory tree and push, pull, commit, sync, repair, or add a GitHub remote
+- **Interactive TUI**: Navigate the directory tree, describe dirty changes, and push, pull, commit, sync, repair, or add a GitHub remote
 - **Subtree Rollups**: In the TUI, a directory reports the state of the repositories beneath it, aggregated in the background
 
 
@@ -40,7 +40,13 @@ go install github.com/osteele/gitsync@latest
 
 ### Default Behavior
 
-When run without arguments, `gitsync` intelligently determines which directory to scan:
+When stdin and stdout are terminals, `gitsync` opens the interactive TUI. If
+either stream is redirected, it prints the line-oriented report instead. A
+report-specific option such as `--filter`, `--sort`, `--all`, or `--recursive`
+also selects the report; use `--list` to request it explicitly, or
+`-i`/`--interactive` to request the TUI explicitly.
+
+In either interface, `gitsync` determines which directory to scan as follows:
 
 1. **Inside a repository**: If you're inside a Git or Jujutsu repository, it scans subdirectories of the repository root
 2. **Outside a repository**: Scans subdirectories of the current directory
@@ -48,6 +54,19 @@ When run without arguments, `gitsync` intelligently determines which directory t
 ```bash
 gitsync
 ```
+
+To change the automatic default, create
+`$XDG_CONFIG_HOME/gitsync/config.toml` (normally
+`~/.config/gitsync/config.toml`):
+
+```toml
+default_mode = "list"
+```
+
+`default_mode` accepts `"tui"` (the built-in default) or `"list"`. The TUI
+default still falls back to the report when stdin or stdout is not a terminal.
+Command-line mode flags take precedence. Unknown keys and invalid values are
+reported as configuration errors.
 
 ### Specifying a Directory
 
@@ -178,15 +197,17 @@ Proceed? [y/N]
 - If stdin is not a terminal and neither `--yes` nor `--dry-run` was given, the run refuses: it prints the plan, explains that confirmation is impossible non-interactively, and exits 2. It never silently proceeds in a pipeline.
 - If nothing is eligible it prints e.g. `Nothing to push.` and exits 0.
 
-Repositories normally run concurrently through a bounded worker pool, one result line streams out per repository as it finishes (`✓ agent-mail  pushed` / `✗ nib  push failed: …`), and a summary follows (`2 pushed, 1 failed: nib`). A failure in one repository does not abort the others. `--fix-all` is deliberately sequential because each `jj fix` may itself launch several formatters. Exit codes: `0` when all succeeded (or nothing was eligible), `1` when any repository failed, `2` for usage errors and refusals.
+Repositories normally run concurrently through a bounded worker pool, one result line streams out per repository as it finishes (`✓ agent-mail  pushed` / `✗ nib  push failed: …`), and a summary follows (`2 pushed, 1 failed: nib`). A failure in one repository does not abort the others. For Jujutsu, push first advances the closest local bookmark to the working-copy parent (the built-in-command expansion of `jj tug`), then pushes all bookmarks to the configured remote and verifies that no publishable revisions remain. This catches Jujutsu refusals that otherwise exit successfully. `--fix-all` is deliberately sequential because each `jj fix` may itself launch several formatters. Exit codes: `0` when all succeeded (or nothing was eligible), `1` when any repository failed, `2` for usage errors and refusals.
 
-`--fix-all` shows the effective formatter names reported by `jj config list` in its plan. `--dry-run` is plan-only because `jj fix` has no conventional dry-run. After each repository completes, gitsync prints the Jujutsu operation summary and a reproducing `jj -R PATH op show -p OPERATION` command so the history rewrite can be reviewed or restored through the operation log. The first version intentionally uses each repository's default `jj fix` revset instead of forwarding a cross-repository revset or fileset.
+`--fix-all` shows the effective formatter names reported by `jj config list` in its plan. `--dry-run` is plan-only because `jj fix` has no conventional dry-run. After each repository completes, gitsync prints how many revisions changed, the Jujutsu operation summary, and a reproducing `jj -R PATH op show -p OPERATION` command so the history rewrite can be reviewed or restored through the operation log. The final summary reports revisions changed across repositories changed, separately from failures. Counts come from comparing change and commit IDs before and after the fix operation. The first version intentionally uses each repository's default `jj fix` revset instead of forwarding a cross-repository revset or fileset.
 
 `--commit-all` never reuses the single-repo canned message. It requires `git-ai-commit` (for Git repositories) and `jj-ai-commit` (for Jujutsu repositories) on `PATH`, which generate a conventional-commit message from the diff. Before prompting, gitsync checks that the tools the eligible set actually needs are available; if one is missing it refuses — naming the tool and the affected repositories — and exits 2, rather than partially proceeding.
 
 ### Interactive TUI
 
-Launch the interactive terminal UI with `-i` or `--interactive`:
+The interactive terminal UI opens automatically in a terminal. Use `-i` or
+`--interactive` to force it (for example, when the configured default is the
+list), or `--list` to force the report:
 
 ```bash
 gitsync -i
@@ -199,10 +220,12 @@ In the TUI you can navigate the directory tree with `↑`/`↓` (or `k`/`j`) and
 |-----|--------|
 | `→` / `l` | Expand a directory to reveal the repositories it contains (scanned on first expansion, then cached) |
 | `←` / `h` | Collapse an expanded directory |
-| `p` | Push |
-| `u` | Pull (Git) / fetch (Jujutsu) |
-| `c` | Commit all changes; opens a prompt for the message, pre-filled with an AI-drafted one when `git-ai-commit`/`jj-ai-commit` is on `PATH` |
-| `s` | Sync (pull then push) |
+| `p` | Push the selected repository, or eligible repositories beneath the selected directory rollup |
+| `u` | Pull (Git) / fetch (Jujutsu) for the selected repository or directory rollup |
+| `f` | Run `jj fix` in the selected Jujutsu repository, or in eligible Jujutsu repositories beneath the selected directory rollup |
+| `d` | Show an AI-generated description of the selected repository's dirty changes using `git-ai-commit` or `jj-ai-commit`, when installed |
+| `c` | Commit the selected repository, or plan per-repository commits beneath the selected directory rollup |
+| `s` | Sync (pull then push) the selected repository or directory rollup |
 | `P` | Push all eligible repositories in scope (asks to confirm) |
 | `U` | Pull all eligible repositories in scope (asks to confirm) |
 | `C` | Commit all dirty repositories with AI-generated messages (asks to confirm) |
@@ -210,18 +233,21 @@ In the TUI you can navigate the directory tree with `↑`/`↓` (or `k`/`j`) and
 | `r` | Repair a corrupted Git repository (asks to confirm) |
 | `a` | Add `origin` from the matching GitHub remote (asks to confirm if replacing one) |
 | `o` | Open the repository in `$EDITOR` |
-| `f` | Reveal the repository in the system file manager |
+| `v` | Reveal the repository in the system file manager |
 | `enter` | Show details for the selected repository, including the full output of its last action |
-| `?` | Toggle the full key list (`esc` hides it) |
+| `?` | Toggle the key overlay (`esc` hides it) |
 | `q` / `ctrl+c` | Quit |
 
 Notes:
 
-- **Confirmations.** `r` and `a` are destructive — `r` moves `.git` aside and `a` can replace an existing `origin` — so they prompt for `y`/`n` first. The shift-key bulk actions (`P`, `U`, `C`, `S`) also confirm first, showing the count and the first few names. `esc` also cancels.
-- **Commit messages.** `c` opens a one-line input pre-filled with the default message. `enter` commits, `esc` cancels.
+- **Confirmations.** `r` and `a` are destructive — `r` moves `.git` aside and `a` can replace an existing `origin` — so they prompt for `y`/`n` first. The shift-key bulk actions (`P`, `U`, `C`, `S`) also confirm first, showing the count and the first few names. Confirmation prompts use sentence capitalization and wrap within the terminal while reserving their full height, so target names and `(y/n)` remain visible. `esc` also cancels.
+- **Commit messages.** `c` opens an expanding multiline editor that shows the complete generated subject and body when they fit. `enter` commits; `esc` cancels without discarding a generated draft from the session cache.
+- **Change descriptions.** `d` is available only for a dirty repository whose matching `git-ai-commit` or `jj-ai-commit` executable is on `PATH`. It invokes the tool with `--dry-run --json` and validates the versioned result before displaying it. When the generated description, summary, and file list fit, they share one page. Otherwise they become separate views: `←`/`→` (or `h`/`l`, tab/shift-tab) switches views, and page-up/page-down scrolls long content. The model, tool, target, file count, and diff size remain in a pinned line. Descriptions generated from either `c` or `d` are cached in memory for the current TUI session, per repository and diff hash; reopening either view reuses the description while the tree is unchanged. Changing the diff, successfully committing, or quitting gitsync discards that reuse. In the description view, `c` commits with the generated description and returns to the list; `esc` returns without committing.
+- **Help.** The short key line is anchored to the terminal's bottom row, so expanding and collapsing directories do not move it. `?` opens a modal key overlay over the list, so showing help does not resize or scroll the repository view. While it is open, `?` and `esc` close it and other keys are ignored.
 - **One action at a time per repository.** While an action runs, its row shows `⏳` and further keys for that repository are ignored; other repositories remain available.
-- **Failures persist.** Successful results clear after a few seconds; failures stay until the next keypress, and the full command output is available via `enter`.
-- **Rollups.** A directory row reports the state of the repositories beneath it (`14 repos, 3 dirty, 8 ahead`; repositories whose ahead count could not be determined count as `ahead ?` rather than as synced), and a total row above the list aggregates the whole scan. Both are computed in the background: rows appear immediately with a plain count and fill in as the subtree scans land, so nothing blocks on them. Rollups are TUI-only — the batch listing stays a fast shallow scan.
+- **Bulk progress and failures.** While a bulk action runs, its status uses the active verb (`Pushing`, `Pulling`, `Committing`, `Fixing`, or `Syncing`) and reports completed/total, actual worker starts by repository name, queued work, failures, and elapsed time. A failed batch automatically opens a pageable report with a numbered record for each failure: repository name, location, version-control system, and complete error output are labeled separately. For a directory-scoped action, that report remains available from the directory's `enter` details after returning to the list. Other successful results clear after a few seconds; failures remain available.
+- **Rollups.** A directory row reports the state of every repository beneath it. When repositories occur below another plain directory, the count makes that explicit (`42 repos (31 direct + 11 nested), 15 dirty`). Repositories whose ahead count could not be determined count as `ahead ?` rather than as synced; for example, `1 ahead ?` means one repository has an unknown count, not one unknown commit. A total row below the list aggregates the whole scan. Both are computed in the background: rows appear immediately with a plain count and fill in as the subtree scans land, so nothing blocks on them. Rollups are TUI-only — the batch listing stays a fast shallow scan.
+- **Rollup actions.** Lowercase `p`, `u`, `c`, `s`, and `f` operate on the selected row: one repository directly, or a confirmed plan for eligible repositories recursively beneath one selected directory rollup. `f` selects only healthy Jujutsu repositories, runs their configured `jj fix` tools sequentially, and reports revisions changed across repositories changed. Uppercase `P`, `U`, `C`, and `S` instead operate across the entire scan root, including repositories represented by collapsed rollups. After an action completes, affected directory rollups and the total temporarily return to a pending state and are recomputed, so they never continue presenting pre-action counts as current.
 - **Columns.** Each row is `status · type · name · detail`, and every column has a width fixed by data known at listing time, so nothing shifts as background scans land. The nesting indent leads the whole row, so a child's icons sit beneath its parent's while the detail column stays aligned. A rule and a `Total` line close the table with the item count and the aggregate.
 - **Badges.** Status occupies three fixed one-cell slots, so a glyph always appears in the same column: `●` dirty, then `↑` ahead / `↓` behind, then `✓` clean and backed up / `⌂` local only (no remote) / `✗` corrupted / `!` scan error / `⋯` action running. Text-presentation glyphs are used throughout because emoji render at inconsistent widths, which is what makes columns wander.
 - **Type icon.** Left of the name: `📁` a directory, `⎇` a Git repository, `ⅉ` a Jujutsu repository. The two repository glyphs are from different families on purpose — a letterform beside line art is told apart at a glance, where a second fork-shaped mark would not be.
@@ -253,7 +279,7 @@ The output is a table with three columns:
 | `dirty` | There are uncommitted changes |
 | `ahead N` | `N` local commits have not been pushed |
 | `behind N` | The remote has `N` commits not present locally |
-| `ahead ?` | A remote exists but the count could not be determined (e.g. no upstream configured) |
+| `ahead ?` | A remote exists but the count could not be determined (for Git, commonly because no upstream is configured) |
 | `no remote` | No remote is configured |
 | `N repos` | A plain directory directly containing `N` repositories |
 | `clean` | None of the above |

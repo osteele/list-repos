@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 
+	"golang.org/x/term"
+
 	"github.com/osteele/gitsync/internal/actions"
 	"github.com/osteele/gitsync/internal/query"
 	"github.com/osteele/gitsync/internal/report"
@@ -21,6 +23,7 @@ type options struct {
 	filter      string
 	sort        string
 	interactive bool
+	list        bool
 	showAll     bool
 	recursive   bool
 	depth       int
@@ -68,6 +71,7 @@ func parseArgs(argv []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&opts.sort, "s", "", "Sort expression (short form)")
 	fs.BoolVar(&opts.interactive, "interactive", false, "Launch interactive TUI")
 	fs.BoolVar(&opts.interactive, "i", false, "Launch interactive TUI (short form)")
+	fs.BoolVar(&opts.list, "list", false, "Print the non-interactive report")
 	fs.BoolVar(&opts.showAll, "all", false, "Include non-repository (dir) directories in the table")
 	fs.BoolVar(&opts.recursive, "recursive", false, "Descend into non-repository directories to find nested repositories")
 	fs.BoolVar(&opts.recursive, "r", false, "Descend into non-repository directories (short form)")
@@ -136,6 +140,11 @@ func parseArgs(argv []string, stderr io.Writer) (options, error) {
 		_, _ = fmt.Fprintf(fs.Output(), "gitsync: %v\n", err)
 		return options{}, err
 	}
+	if opts.interactive && opts.list {
+		err := fmt.Errorf("--interactive and --list are mutually exclusive")
+		_, _ = fmt.Fprintf(fs.Output(), "gitsync: %v\n", err)
+		return options{}, err
+	}
 	return opts, nil
 }
 
@@ -147,6 +156,16 @@ func main() {
 	if err != nil {
 		os.Exit(2)
 	}
+	path, err := configPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(2)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(2)
+	}
 
 	// Determine which directory to scan
 	scanDir := opts.scanDir
@@ -154,7 +173,7 @@ func main() {
 		scanDir = vcs.GetDefaultDirectory()
 	}
 
-	if opts.interactive {
+	if shouldRunTUI(opts, cfg, term.IsTerminal(int(os.Stdin.Fd())), term.IsTerminal(int(os.Stdout.Fd()))) {
 		if err := tui.RunTUI(scanDir); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)

@@ -99,6 +99,7 @@ func indented(output string) string {
 // it finishes, then a summary. It returns 1 when any repository failed.
 func executeBulk(op actions.BulkOp, items []actions.PlanItem, dryRun bool, stdout io.Writer) int {
 	var failedNames []string
+	changedRevisions, changedRepos := 0, 0
 	succeeded, failed := actions.ExecuteBulk(op, items, dryRun, func(r actions.Result) {
 		name := filepath.Base(r.Item.Status.Path)
 		if r.Err != nil {
@@ -117,7 +118,11 @@ func executeBulk(op actions.BulkOp, items []actions.PlanItem, dryRun bool, stdou
 			return
 		}
 		if op == actions.BulkFix && strings.TrimSpace(r.Output) != "" {
-			_, _ = fmt.Fprintf(stdout, "✓ %s  %s:%s\n", name, op.PastTense(), indented(r.Output))
+			_, _ = fmt.Fprintf(stdout, "✓ %s  %d %s changed:%s\n", name, r.ChangedRevisions, pluralWord(r.ChangedRevisions, "revision", "revisions"), indented(r.Output))
+			if r.ChangedRevisions > 0 {
+				changedRevisions += r.ChangedRevisions
+				changedRepos++
+			}
 			return
 		}
 		_, _ = fmt.Fprintf(stdout, "✓ %s  %s\n", name, op.PastTense())
@@ -128,6 +133,9 @@ func executeBulk(op actions.BulkOp, items []actions.PlanItem, dryRun bool, stdou
 		verb = "would " + op.String()
 	}
 	summary := fmt.Sprintf("%d %s, %d failed", succeeded, verb, failed)
+	if op == actions.BulkFix && !dryRun {
+		summary = fmt.Sprintf("%d %s changed across %d %s, %d failed", changedRevisions, pluralWord(changedRevisions, "revision", "revisions"), changedRepos, pluralWord(changedRepos, "repository", "repositories"), failed)
+	}
 	if len(failedNames) > 0 {
 		summary += ": " + strings.Join(failedNames, ", ")
 	}
@@ -137,4 +145,11 @@ func executeBulk(op actions.BulkOp, items []actions.PlanItem, dryRun bool, stdou
 		return 1
 	}
 	return 0
+}
+
+func pluralWord(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }

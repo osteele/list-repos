@@ -2,6 +2,7 @@ package actions
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -401,6 +402,171 @@ func TestActionAddGitHubRemote(t *testing.T) {
 	expected := "https://github.com/testuser/" + filepath.Base(tmpDir) + ".git\n"
 	if string(output) != expected {
 		t.Fatalf("expected %q, got %q", expected, output)
+	}
+}
+
+func TestDescribeChangesUsesReadOnlyToolMode(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		metadata string
+		tool     string
+	}{
+		{name: "git", metadata: ".git", tool: "git-ai-commit"},
+		{name: "jj", metadata: ".jj", tool: "jj-ai-commit"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			if err := os.Mkdir(filepath.Join(repo, tt.metadata), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			binDir := t.TempDir()
+			toolPath := filepath.Join(binDir, tt.tool)
+			payload := fmt.Sprintf(`{"schemaVersion":"ai-describe/v1","tool":{"name":%q},"model":{"requested":"auto","display":"mock/model"},"results":[{"target":{"kind":"working-copy","display":"working copy"},"previousDescription":"","description":"fix: describe changes","files":[{"status":"modified","path":"README.md"}],"diffBytes":123,"applied":false}]}`, tt.tool)
+			script := "#!/bin/sh\n[ \"$*\" = \"--dry-run --json\" ] || exit 9\nprintf '%s' '" + payload + "'\n"
+			if err := os.WriteFile(toolPath, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			got, err := DescribeChanges(repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Tool != tt.tool || got.ModelDisplay != "mock/model" || got.CommitMessage != "fix: describe changes" {
+				t.Fatalf("DescribeChanges() = %+v", got)
+			}
+			if len(got.Files) != 1 || got.Files[0].Path != "README.md" || got.DiffBytes != 123 {
+				t.Fatalf("DescribeChanges() lost structured data: %+v", got)
+			}
+		})
+	}
+}
+
+func TestDecodeChangeDescriptionValidatesContract(t *testing.T) {
+	payload := []byte(`{
+		"schemaVersion": "ai-describe/v1",
+		"tool": {"name": "jj-ai-commit"},
+		"model": {"requested": "auto", "display": "mock/model"},
+		"results": [{
+			"target": {"kind": "working-copy", "display": "@", "id": "abc"},
+			"previousDescription": "",
+			"description": "feat: add the application shell\n\nExplain routing.",
+			"files": [{"status": "added", "path": "README.md"}],
+			"diffBytes": 456,
+			"applied": false
+		}]
+	}`)
+	got, err := decodeChangeDescription(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CommitMessage != "feat: add the application shell\n\nExplain routing." || got.Target.ID != "abc" {
+		t.Fatalf("decodeChangeDescription() = %+v", got)
+	}
+}
+
+func TestDecodeChangeDescriptionRejectsInvalidContracts(t *testing.T) {
+	tests := map[string]string{
+		"wrong version":   `{"schemaVersion":"ai-describe/v2"}`,
+		"missing result":  `{"schemaVersion":"ai-describe/v1","tool":{"name":"x"},"model":{"display":"m"},"results":[]}`,
+		"applied result":  `{"schemaVersion":"ai-describe/v1","tool":{"name":"x"},"model":{"display":"m"},"results":[{"target":{"kind":"working-copy","display":"@"},"description":"fix: x","files":[],"diffBytes":1,"applied":true}]}`,
+		"missing applied": `{"schemaVersion":"ai-describe/v1","tool":{"name":"x"},"model":{"display":"m"},"results":[{"target":{"kind":"working-copy","display":"@"},"description":"fix: x","files":[],"diffBytes":1}]}`,
+	}
+	for name, payload := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeChangeDescription([]byte(payload)); err == nil {
+				t.Fatal("expected invalid contract to fail")
+			}
+		})
+	}
+}
+
+func TestDescriptionInputHashTracksGitChanges(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	readme := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(readme, []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "README.md"}, {"commit", "-m", "initial"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	if err := os.WriteFile(readme, []byte("first change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := DescriptionInputHash(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := DescriptionInputHash(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != again {
+		t.Fatalf("unchanged diff hash changed: %q != %q", first, again)
+	}
+	if err := os.WriteFile(readme, []byte("second change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := DescriptionInputHash(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed == first {
+		t.Fatal("changed Git diff retained its description hash")
+	}
+
+	untracked := filepath.Join(repo, "notes.txt")
+	if err := os.WriteFile(untracked, []byte("first untracked contents\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	untrackedFirst, err := DescriptionInputHash(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(untracked, []byte("second untracked contents\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	untrackedChanged, err := DescriptionInputHash(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if untrackedChanged == untrackedFirst {
+		t.Fatal("changed untracked contents retained their description hash")
+	}
+}
+
+func TestDescriptionInputHashTracksJujutsuChanges(t *testing.T) {
+	if _, err := exec.LookPath("jj"); err != nil {
+		t.Skip("jj is not installed")
+	}
+	repo := t.TempDir()
+	cmd := exec.Command("jj", "git", "init")
+	cmd.Dir = repo
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("jj git init: %v\n%s", err, output)
+	}
+	readme := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(readme, []byte("first change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := DescriptionInputHash(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(readme, []byte("second change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := DescriptionInputHash(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed == first {
+		t.Fatal("changed Jujutsu diff retained its description hash")
 	}
 }
 

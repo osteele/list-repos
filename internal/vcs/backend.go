@@ -80,9 +80,23 @@ type jjBackend struct{}
 func (jjBackend) Status(st *RepoStatus) error { return getJujutsuStatus(st) }
 
 func (jjBackend) Push(path string) error {
-	output, err := RunVCS(path, NetworkTimeout, "jj", "git", "push", "--all")
+	// Advance the closest local bookmark to the working-copy parent before
+	// pushing. This is the supported-command expansion of the user's `jj tug`
+	// alias and makes the anonymous commit created by `jj commit` publishable.
+	tugOutput, err := RunVCS(path, StatusTimeout, "jj", "--ignore-working-copy", "bookmark", "move", "--from", "closest_bookmark(@-)", "--to", "@-")
+	if err != nil {
+		return fmt.Errorf("tug before push failed: %w\n%s", err, tugOutput)
+	}
+	output, err := RunVCS(path, NetworkTimeout, "jj", "--ignore-working-copy", "git", "push", "--all")
 	if err != nil {
 		return fmt.Errorf("push failed: %w\n%s", err, output)
+	}
+	ahead := getJujutsuAheadCount(path)
+	if !ahead.Known {
+		return fmt.Errorf("push completed but the resulting Jujutsu status could not be verified\n%s", output)
+	}
+	if ahead.N > 0 {
+		return fmt.Errorf("push completed without publishing %d revision(s)\n%s", ahead.N, output)
 	}
 	return nil
 }

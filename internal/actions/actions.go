@@ -1,8 +1,13 @@
 package actions
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +17,168 @@ import (
 
 // DefaultCommitMessage is used when no commit message is supplied.
 const DefaultCommitMessage = "Update via gitsync"
+
+const descriptionSchemaVersion = "ai-describe/v1"
+
+// DescriptionToolFor names the optional AI description tool for a repository
+// type. The tools own their diff interpretation; gitsync only invokes their
+// read-only dry-run interface and displays the result with provenance.
+func DescriptionToolFor(repoType vcs.RepoType) string {
+	if repoType == vcs.Jujutsu {
+		return "jj-ai-commit"
+	}
+	return "git-ai-commit"
+}
+
+// DescriptionToolAvailable reports whether the AI description tool for path
+// is installed.
+func DescriptionToolAvailable(path string) bool {
+	_, err := exec.LookPath(DescriptionToolFor(vcs.DetectRepoType(path)))
+	return err == nil
+}
+
+// DescriptionFile is one changed path reported by an AI commit tool.
+type DescriptionFile struct {
+	Status string `json:"status"`
+	Path   string `json:"path"`
+}
+
+// DescriptionTarget identifies the working copy the description was derived
+// from. ID is populated when the owning VCS provides a stable identifier.
+type DescriptionTarget struct {
+	Kind    string `json:"kind"`
+	Display string `json:"display"`
+	ID      string `json:"id,omitempty"`
+}
+
+// ChangeDescription is gitsync's normalized view of ai-describe/v1. The
+// external JSON contract is decoded once here rather than leaking into TUI
+// layout code.
+type ChangeDescription struct {
+	Tool                string
+	RequestedModel      string
+	ModelDisplay        string
+	Target              DescriptionTarget
+	PreviousDescription string
+	Description         string
+	Files               []DescriptionFile
+	DiffBytes           int64
+	CommitMessage       string
+}
+
+type descriptionDocument struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Tool          struct {
+		Name string `json:"name"`
+	} `json:"tool"`
+	Model struct {
+		Requested string `json:"requested"`
+		Display   string `json:"display"`
+	} `json:"model"`
+	Results []struct {
+		Target              DescriptionTarget `json:"target"`
+		PreviousDescription string            `json:"previousDescription"`
+		Description         string            `json:"description"`
+		Files               []DescriptionFile `json:"files"`
+		DiffBytes           int64             `json:"diffBytes"`
+		Applied             *bool             `json:"applied"`
+	} `json:"results"`
+}
+
+// DescribeChanges asks the repository-specific AI tool to describe the dirty
+// changes without applying the proposed description.
+func DescribeChanges(path string) (ChangeDescription, error) {
+	repoType := vcs.DetectRepoType(path)
+	if repoType == vcs.Dir {
+		return ChangeDescription{}, fmt.Errorf("not a repository")
+	}
+	tool := DescriptionToolFor(repoType)
+	if _, err := exec.LookPath(tool); err != nil {
+		return ChangeDescription{}, fmt.Errorf("%s is not installed", tool)
+	}
+	args := []string{"--dry-run", "--json"}
+	output, err := vcs.RunVCSOutputWithin(path, vcs.DraftTimeout, tool, args...)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+				return ChangeDescription{}, fmt.Errorf("%s failed: %w\n%s", tool, err, stderr)
+			}
+		}
+		return ChangeDescription{}, fmt.Errorf("%s failed: %w", tool, err)
+	}
+	if len(bytes.TrimSpace(output)) == 0 {
+		return ChangeDescription{}, fmt.Errorf("%s returned no description", tool)
+	}
+	description, err := decodeChangeDescription(output)
+	if err != nil {
+		return ChangeDescription{}, fmt.Errorf("parse %s JSON: %w", tool, err)
+	}
+	if description.Tool != tool {
+		return ChangeDescription{}, fmt.Errorf("parse %s JSON: tool.name is %q", tool, description.Tool)
+	}
+	return description, nil
+}
+
+func decodeChangeDescription(output []byte) (ChangeDescription, error) {
+	var document descriptionDocument
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	if err := decoder.Decode(&document); err != nil {
+		return ChangeDescription{}, err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return ChangeDescription{}, fmt.Errorf("multiple JSON values")
+		}
+		return ChangeDescription{}, fmt.Errorf("trailing data: %w", err)
+	}
+	if document.SchemaVersion != descriptionSchemaVersion {
+		return ChangeDescription{}, fmt.Errorf("unsupported schemaVersion %q", document.SchemaVersion)
+	}
+	if document.Tool.Name == "" {
+		return ChangeDescription{}, fmt.Errorf("tool.name is required")
+	}
+	if document.Model.Display == "" {
+		return ChangeDescription{}, fmt.Errorf("model.display is required")
+	}
+	if len(document.Results) != 1 {
+		return ChangeDescription{}, fmt.Errorf("expected one result, got %d", len(document.Results))
+	}
+	result := document.Results[0]
+	if result.Target.Kind == "" || result.Target.Display == "" {
+		return ChangeDescription{}, fmt.Errorf("result target kind and display are required")
+	}
+	if result.Applied == nil {
+		return ChangeDescription{}, fmt.Errorf("result applied flag is required")
+	}
+	if *result.Applied {
+		return ChangeDescription{}, fmt.Errorf("description command unexpectedly applied changes")
+	}
+	message := strings.TrimSpace(result.Description)
+	if message == "" {
+		return ChangeDescription{}, fmt.Errorf("result description is required")
+	}
+	if result.DiffBytes < 0 {
+		return ChangeDescription{}, fmt.Errorf("result diffBytes must not be negative")
+	}
+	for i, file := range result.Files {
+		if file.Status == "" || file.Path == "" {
+			return ChangeDescription{}, fmt.Errorf("result file %d requires status and path", i)
+		}
+	}
+	return ChangeDescription{
+		Tool:                document.Tool.Name,
+		RequestedModel:      document.Model.Requested,
+		ModelDisplay:        document.Model.Display,
+		Target:              result.Target,
+		PreviousDescription: result.PreviousDescription,
+		Description:         message,
+		Files:               result.Files,
+		DiffBytes:           result.DiffBytes,
+		CommitMessage:       message,
+	}, nil
+}
 
 // ActionPush pushes the current repository.
 func ActionPush(path string) error {

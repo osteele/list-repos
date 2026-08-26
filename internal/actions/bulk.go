@@ -267,9 +267,10 @@ func PreflightCommitTools(items []PlanItem) error {
 // carries the action's combined output where it is worth showing — the AI
 // tools' dry-run prints the message they would commit with.
 type Result struct {
-	Item   PlanItem
-	Output string
-	Err    error
+	Item             PlanItem
+	Output           string
+	ChangedRevisions int
+	Err              error
 }
 
 // ExecuteBulk runs the operation on every planned item through a bounded
@@ -280,21 +281,35 @@ type Result struct {
 // commit, which passes the AI tool's own dry-run flag through so the would-be
 // messages are shown.
 func ExecuteBulk(op BulkOp, items []PlanItem, dryRun bool, onResult func(Result)) (succeeded, failed int) {
+	return ExecuteBulkWithProgress(op, items, dryRun, nil, onResult)
+}
+
+// ExecuteBulkWithProgress is ExecuteBulk with an additional callback invoked
+// when a worker actually starts a repository. Both callbacks are serialized by
+// the coordinator, so display clients can consume real queued/running/completed
+// transitions without synchronizing their own state.
+func ExecuteBulkWithProgress(op BulkOp, items []PlanItem, dryRun bool, onStart func(PlanItem), onResult func(Result)) (succeeded, failed int) {
 	if len(items) == 0 {
 		return 0, 0
 	}
 	workerCount := workerCountFor(op, len(items))
 
 	jobs := make(chan PlanItem)
-	results := make(chan Result, len(items))
+	type executionEvent struct {
+		item    PlanItem
+		result  Result
+		started bool
+	}
+	events := make(chan executionEvent, len(items)*2)
 	var wg sync.WaitGroup
 	wg.Add(workerCount)
 	for i := 0; i < workerCount; i++ {
 		go func() {
 			defer wg.Done()
 			for item := range jobs {
-				output, err := runOne(op, item.Status.Path, dryRun)
-				results <- Result{Item: item, Output: output, Err: err}
+				events <- executionEvent{item: item, started: true}
+				output, changedRevisions, err := runOne(op, item.Status.Path, dryRun)
+				events <- executionEvent{result: Result{Item: item, Output: output, ChangedRevisions: changedRevisions, Err: err}}
 			}
 		}()
 	}
@@ -304,10 +319,17 @@ func ExecuteBulk(op BulkOp, items []PlanItem, dryRun bool, onResult func(Result)
 		}
 		close(jobs)
 		wg.Wait()
-		close(results)
+		close(events)
 	}()
 
-	for r := range results {
+	for event := range events {
+		if event.started {
+			if onStart != nil {
+				onStart(event.item)
+			}
+			continue
+		}
+		r := event.result
 		if r.Err != nil {
 			failed++
 		} else {
@@ -334,46 +356,67 @@ func workerCountFor(op BulkOp, itemCount int) int {
 	return workerCount
 }
 
-func runOne(op BulkOp, path string, dryRun bool) (string, error) {
+func runOne(op BulkOp, path string, dryRun bool) (string, int, error) {
 	switch op {
 	case BulkCommit:
-		return actionCommitAI(path, dryRun)
+		output, err := actionCommitAI(path, dryRun)
+		return output, 0, err
 	case BulkPull:
-		return "", ActionPull(path)
+		return "", 0, ActionPull(path)
 	case BulkFix:
-		return actionFix(path)
+		result, err := ActionFix(path)
+		return result.Output, result.ChangedRevisions, err
 	case BulkPush:
-		return "", ActionPush(path)
+		return "", 0, ActionPush(path)
 	case BulkSync:
-		return "", ActionSync(path)
+		return "", 0, ActionSync(path)
 	default:
-		return "", fmt.Errorf("unknown bulk operation")
+		return "", 0, fmt.Errorf("unknown bulk operation")
 	}
 }
 
-// actionFix runs Jujutsu's configured fix tools and reports the operation
+// FixResult reports both the review details and the number of revisions whose
+// commit IDs changed in the jj fix operation.
+type FixResult struct {
+	Output           string
+	ChangedRevisions int
+}
+
+// ActionFix runs Jujutsu's configured fix tools and reports the operation
 // that contains the rewrite. The operation is Jujutsu's recoverable
 // checkpoint; the printed command gives the user a direct patch review path.
-func actionFix(path string) (string, error) {
+func ActionFix(path string) (FixResult, error) {
 	tools, err := ConfiguredFixTools(path)
 	if err != nil {
-		return "", err
+		return FixResult{}, err
 	}
 	if len(tools) == 0 {
-		return "", fmt.Errorf("no jj fix tools configured")
+		return FixResult{}, fmt.Errorf("no jj fix tools configured")
 	}
 	output, err := vcs.RunVCS(path, vcs.FixTimeout, "jj", "fix")
 	if err != nil {
-		return "", fmt.Errorf("jj fix failed: %w\n%s", err, output)
+		return FixResult{}, fmt.Errorf("jj fix failed: %w\n%s", err, output)
 	}
-	opOutput, err := vcs.RunVCSOutput(path, "jj", "op", "log", "--at-op=@", "--ignore-working-copy", "-G", "-n", "1", "-T", `id.short() ++ "\n"`)
+	opOutput, err := vcs.RunVCSOutput(path, "jj", "op", "log", "--at-op=@", "--ignore-working-copy", "-G", "-n", "1", "-T", `id ++ "\n"`)
 	if err != nil {
-		return "", fmt.Errorf("jj fix completed but its operation could not be identified: %w", err)
+		return FixResult{}, fmt.Errorf("jj fix completed but its operation could not be identified: %w", err)
 	}
 	opID := strings.TrimSpace(string(opOutput))
+	parentOutput, err := vcs.RunVCSOutput(path, "jj", "op", "log", "--at-op="+opID, "--ignore-working-copy", "-G", "-n", "1", "-T", `parents.map(|parent| parent.id() ++ "\n").join("")`)
+	if err != nil {
+		return FixResult{}, fmt.Errorf("jj fix completed in operation %s but its parent operation could not be identified: %w", opID, err)
+	}
+	parents := strings.Fields(string(parentOutput))
+	if len(parents) != 1 {
+		return FixResult{}, fmt.Errorf("jj fix completed in operation %s with %d parent operations; revision changes cannot be counted", opID, len(parents))
+	}
+	changedRevisions, err := countChangedRevisions(path, parents[0], opID)
+	if err != nil {
+		return FixResult{}, fmt.Errorf("jj fix completed in operation %s but its changed revisions could not be counted: %w", opID, err)
+	}
 	stat, err := vcs.RunVCS(path, vcs.StatusTimeout, "jj", "op", "show", "--at-op=@", "--ignore-working-copy", "--stat", opID)
 	if err != nil {
-		return "", fmt.Errorf("jj fix completed in operation %s but its diff could not be shown: %w\n%s", opID, err, stat)
+		return FixResult{}, fmt.Errorf("jj fix completed in operation %s but its diff could not be shown: %w\n%s", opID, err, stat)
 	}
 	parts := []string{strings.TrimSpace(string(output)), strings.TrimSpace(string(stat))}
 	var visible []string
@@ -383,7 +426,66 @@ func actionFix(path string) (string, error) {
 		}
 	}
 	visible = append(visible, fmt.Sprintf("Review: jj -R %q op show -p %s", path, opID))
-	return strings.Join(visible, "\n"), nil
+	return FixResult{Output: strings.Join(visible, "\n"), ChangedRevisions: changedRevisions}, nil
+}
+
+func countChangedRevisions(path, beforeOp, afterOp string) (int, error) {
+	before, err := revisionIDsAtOperation(path, beforeOp)
+	if err != nil {
+		return 0, err
+	}
+	after, err := revisionIDsAtOperation(path, afterOp)
+	if err != nil {
+		return 0, err
+	}
+	changeIDs := make(map[string]struct{}, len(before)+len(after))
+	for id := range before {
+		changeIDs[id] = struct{}{}
+	}
+	for id := range after {
+		changeIDs[id] = struct{}{}
+	}
+	changed := 0
+	for id := range changeIDs {
+		if !equalStringSets(before[id], after[id]) {
+			changed++
+		}
+	}
+	return changed, nil
+}
+
+func revisionIDsAtOperation(path, opID string) (map[string]map[string]struct{}, error) {
+	output, err := vcs.RunVCS(path, vcs.StatusTimeout, "jj", "log", "--at-op="+opID, "--ignore-working-copy", "-r", "all()", "--no-graph", "-T", `change_id ++ " " ++ commit_id ++ "\n"`)
+	if err != nil {
+		return nil, err
+	}
+	revisions := make(map[string]map[string]struct{})
+	for lineNumber, line := range strings.Split(string(output), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("unexpected jj log record on line %d: %q", lineNumber+1, line)
+		}
+		if revisions[fields[0]] == nil {
+			revisions[fields[0]] = make(map[string]struct{})
+		}
+		revisions[fields[0]][fields[1]] = struct{}{}
+	}
+	return revisions, nil
+}
+
+func equalStringSets(a, b map[string]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for value := range a {
+		if _, ok := b[value]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // actionCommitAI commits with an AI-generated message from git-ai-commit or

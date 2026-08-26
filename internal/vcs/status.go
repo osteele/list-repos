@@ -9,6 +9,11 @@ import (
 	"strings"
 )
 
+// jujutsuAheadRevset selects non-empty revisions that the push action can
+// publish. Keep this aligned with jjBackend.Push: that action advances the
+// closest bookmark to the working-copy parent before pushing all bookmarks.
+const jujutsuAheadRevset = "((::bookmarks() | ::@-) ~ ::remote_bookmarks()) & ~ root() & ~ empty()"
+
 // RepoType classifies a directory as a non-repo, Git repo, or Jujutsu repo.
 type RepoType int
 
@@ -188,15 +193,12 @@ func getJujutsuStatus(status *RepoStatus) error {
 
 	// Check for ahead commits (only if there's a remote)
 	if status.Remote {
-		// Count non-empty revisions that are not in remote bookmarks (excluding root)
-		// We exclude empty revisions as they're typically just working copies
-		output, err = RunVCS(status.Path, StatusTimeout, "jj", "log", "-r", "all() & ~ remote_bookmarks() & ~ root() & ~ empty()", "--no-graph", "-T", "commit_id")
-		if err != nil {
-			// If the command fails, the unpushed count is unknown
-			status.Ahead = Count{}
-		} else {
-			status.Ahead = Count{N: countLines(output), Known: true}
-		}
+		// Count non-empty revisions the push action can publish: ancestors of
+		// local bookmarks plus the current working-copy parent (which `tug`
+		// advances a bookmark to), excluding history already reachable from a
+		// remote bookmark. Using all() here counts unrelated visible history and
+		// continues reporting a repository ahead after a successful push.
+		status.Ahead = getJujutsuAheadCount(status.Path)
 	} else {
 		// No remote to be ahead of: the count is undefined, not zero.
 		status.Ahead = Count{}
@@ -205,6 +207,14 @@ func getJujutsuStatus(status *RepoStatus) error {
 	// jj does not track behind here yet; report it as unknown, not zero.
 	status.Behind = Count{}
 	return nil
+}
+
+func getJujutsuAheadCount(path string) Count {
+	output, err := RunVCS(path, StatusTimeout, "jj", "log", "-r", jujutsuAheadRevset, "--no-graph", "-T", `commit_id ++ "\n"`)
+	if err != nil {
+		return Count{}
+	}
+	return Count{N: countLines(output), Known: true}
 }
 
 func countLines(output []byte) int {

@@ -12,10 +12,11 @@ import (
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/osteele/gitsync/internal/actions"
 	"github.com/osteele/gitsync/internal/report"
@@ -49,6 +50,9 @@ type tuiItem struct {
 	// the whole subtree.
 	roll     rollup
 	rolledUp bool
+	// rollupSeq rejects an older aggregate that finishes after an action has
+	// already requested a newer scan for the same container.
+	rollupSeq int
 }
 
 func (i tuiItem) name() string {
@@ -171,9 +175,13 @@ func (m model) total() (rollup, bool) {
 				continue
 			}
 			r = r.plus(item.roll)
+			// Every repository below a top-level container is nested relative
+			// to the scan root, even when it is direct relative to that row.
+			r.direct -= item.roll.direct
+			r.nested += item.roll.direct
 			continue
 		}
-		r = r.add(item.status)
+		r = r.addAtDepth(item.status, 1)
 	}
 	return r, complete
 }
@@ -270,23 +278,79 @@ type childrenMsg struct {
 type actionDoneMsg struct {
 	message string
 	path    string
+	action  string
 	failed  bool
+}
+
+type descriptionMsg struct {
+	path        string
+	description actions.ChangeDescription
+	inputHash   string
+	err         error
+}
+
+// bulkPlanMsg carries an asynchronous recursive scan for a bulk action. An
+// empty scope means the uppercase scan-root action; otherwise scope is the
+// directory selected for a lowercase rollup action.
+type bulkPlanMsg struct {
+	op       actions.BulkOp
+	scope    string
+	statuses []*vcs.RepoStatus
+	err      error
 }
 
 // bulkResultMsg carries one finished repository from a running bulk batch;
 // ch yields the rest. bulkDoneMsg ends the batch with the final tallies.
 type bulkResultMsg struct {
-	op        actions.BulkOp
-	result    actions.Result
-	ch        <-chan actions.Result
-	succeeded int
-	failed    int
+	op               actions.BulkOp
+	result           actions.Result
+	ch               <-chan actions.Result
+	paths            []string
+	succeeded        int
+	failed           int
+	changedRevisions int
+	changedRepos     int
+	scope            string
+	failures         []bulkFailure
 }
 
 type bulkDoneMsg struct {
-	op        actions.BulkOp
-	succeeded int
-	failed    int
+	op               actions.BulkOp
+	paths            []string
+	succeeded        int
+	failed           int
+	changedRevisions int
+	changedRepos     int
+	scope            string
+	failures         []bulkFailure
+}
+
+type bulkFailure struct {
+	path     string
+	repoType vcs.RepoType
+	message  string
+}
+
+type bulkTickMsg struct {
+	runID int
+	at    time.Time
+}
+
+type bulkStartedMsg struct {
+	runID int
+	item  actions.PlanItem
+	ch    <-chan actions.PlanItem
+}
+
+type bulkProgressState struct {
+	runID          int
+	op             actions.BulkOp
+	total          int
+	completed      int
+	failed         int
+	started        time.Time
+	running        map[string]string
+	completedPaths map[string]struct{}
 }
 
 // draftMsg carries a proposed commit message from the AI commit tool. seq
@@ -294,10 +358,12 @@ type bulkDoneMsg struct {
 // prompt is submitted must not seed a later prompt on the same repository,
 // whose diff it no longer describes.
 type draftMsg struct {
-	path    string
-	seq     int
-	message string
-	err     error
+	path        string
+	seq         int
+	message     string
+	description actions.ChangeDescription
+	inputHash   string
+	err         error
 }
 
 type clearMsg struct{}
@@ -306,6 +372,16 @@ type clearMsg struct{}
 type pendingAction struct {
 	prompt string
 	run    func(m model) (model, tea.Cmd)
+}
+
+type detailCommit struct {
+	path    string
+	message string
+}
+
+type cachedDescription struct {
+	inputHash   string
+	description actions.ChangeDescription
 }
 
 type model struct {
@@ -322,16 +398,23 @@ type model struct {
 	help          help.Model
 	keys          keyMap
 	pending       *pendingAction
-	commitInput   textinput.Model
+	commitInput   textarea.Model
 	// drafting reports that a commit message is being generated for
 	// draftPath; the prompt is already open and editable meanwhile. draftSeq
 	// distinguishes the in-flight draft from any earlier one for the same
 	// path.
-	drafting   bool
-	draftPath  string
-	draftSeq   int
-	detail     viewport.Model
-	showDetail bool
+	drafting        bool
+	draftPath       string
+	draftSeq        int
+	detail          viewport.Model
+	showDetail      bool
+	descriptionView *descriptionDetail
+	detailCommit    *detailCommit
+	bulkRunID       int
+	bulkProgress    *bulkProgressState
+	// descriptionCache lives only as long as this TUI model. Entries are
+	// repository-scoped and reused only while their VCS diff hash matches.
+	descriptionCache map[string]cachedDescription
 }
 
 type keyMap struct {
@@ -341,7 +424,9 @@ type keyMap struct {
 	Collapse  key.Binding
 	Push      key.Binding
 	Pull      key.Binding
+	Fix       key.Binding
 	Commit    key.Binding
+	Describe  key.Binding
 	Sync      key.Binding
 	PushAll   key.Binding
 	PullAll   key.Binding
@@ -357,12 +442,12 @@ type keyMap struct {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Commit, k.Sync, k.Detail, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Describe, k.Commit, k.Sync, k.Detail, k.Help, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Expand, k.Collapse, k.Push, k.Pull, k.Commit, k.Sync},
+		{k.Up, k.Down, k.Expand, k.Collapse, k.Push, k.Pull, k.Fix, k.Describe, k.Commit, k.Sync},
 		{k.PushAll, k.PullAll, k.CommitAll, k.SyncAll, k.Repair, k.AddRemote, k.Open, k.Reveal, k.Detail, k.Quit},
 	}
 }
@@ -392,9 +477,17 @@ var defaultKeyMap = keyMap{
 		key.WithKeys("u"),
 		key.WithHelp("u", "pull/fetch"),
 	),
+	Fix: key.NewBinding(
+		key.WithKeys("f"),
+		key.WithHelp("f", "jj fix"),
+	),
 	Commit: key.NewBinding(
 		key.WithKeys("c"),
 		key.WithHelp("c", "commit"),
+	),
+	Describe: key.NewBinding(
+		key.WithKeys("d"),
+		key.WithHelp("d", "describe changes"),
 	),
 	Sync: key.NewBinding(
 		key.WithKeys("s"),
@@ -429,8 +522,8 @@ var defaultKeyMap = keyMap{
 		key.WithHelp("o", "open editor"),
 	),
 	Reveal: key.NewBinding(
-		key.WithKeys("f"),
-		key.WithHelp("f", "reveal"),
+		key.WithKeys("v"),
+		key.WithHelp("v", "reveal"),
 	),
 	Detail: key.NewBinding(
 		key.WithKeys("enter"),
@@ -438,7 +531,7 @@ var defaultKeyMap = keyMap{
 	),
 	Help: key.NewBinding(
 		key.WithKeys("?"),
-		key.WithHelp("?", "more keys"),
+		key.WithHelp("?", "keys"),
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
@@ -469,15 +562,19 @@ func newModel(scanDir string) (model, error) {
 	for _, d := range subdirs {
 		items = append(items, tuiItem{path: d})
 	}
-	input := textinput.New()
-	input.Prompt = "commit message: "
-	input.CharLimit = 200
+	input := textarea.New()
+	input.Prompt = ""
+	input.ShowLineNumbers = false
+	input.CharLimit = 0
+	input.SetWidth(80)
+	input.SetHeight(1)
 	return model{
-		scanDir:     scanDir,
-		items:       items,
-		help:        help.New(),
-		keys:        defaultKeyMap,
-		commitInput: input,
+		scanDir:          scanDir,
+		items:            items,
+		help:             help.New(),
+		keys:             defaultKeyMap,
+		commitInput:      input,
+		descriptionCache: make(map[string]cachedDescription),
 	}, nil
 }
 
@@ -532,6 +629,8 @@ const rollupDepth = 4
 // rollup is the aggregate state of the repositories beneath a directory.
 type rollup struct {
 	repos   int
+	direct  int
+	nested  int
 	dirty   int
 	ahead   int
 	behind  int
@@ -561,8 +660,29 @@ func (r rollup) add(s *vcs.RepoStatus) rollup {
 	return r
 }
 
+func (r rollup) addAtDepth(s *vcs.RepoStatus, depth int) rollup {
+	if s.Type == vcs.Dir {
+		return r
+	}
+	r = r.add(s)
+	if depth <= 1 {
+		r.direct++
+	} else {
+		r.nested++
+	}
+	return r
+}
+
 func (r rollup) plus(o rollup) rollup {
-	return rollup{r.repos + o.repos, r.dirty + o.dirty, r.ahead + o.ahead, r.behind + o.behind, r.unknown + o.unknown}
+	return rollup{
+		repos:   r.repos + o.repos,
+		direct:  r.direct + o.direct,
+		nested:  r.nested + o.nested,
+		dirty:   r.dirty + o.dirty,
+		ahead:   r.ahead + o.ahead,
+		behind:  r.behind + o.behind,
+		unknown: r.unknown + o.unknown,
+	}
 }
 
 // text renders the rollup for a status column: the repository count plus
@@ -572,7 +692,11 @@ func (r rollup) text() string {
 	if r.repos == 0 {
 		return ""
 	}
-	parts := []string{fmt.Sprintf("%d %s", r.repos, plural(r.repos, "repo"))}
+	repoCount := fmt.Sprintf("%d %s", r.repos, plural(r.repos, "repo"))
+	if r.nested > 0 && r.direct+r.nested == r.repos {
+		repoCount += fmt.Sprintf(" (%d direct + %d nested)", r.direct, r.nested)
+	}
+	parts := []string{repoCount}
 	if r.dirty > 0 {
 		parts = append(parts, fmt.Sprintf("%d dirty", r.dirty))
 	}
@@ -609,6 +733,7 @@ func plural(n int, word string) string {
 // err means the subtree could not be read and the aggregate is unknown.
 type rollupMsg struct {
 	path string
+	seq  int
 	r    rollup
 	err  error
 }
@@ -617,17 +742,17 @@ type rollupMsg struct {
 // container. This is the expensive part of the view -- it scans the whole
 // subtree -- so it runs as a background command per container and the row
 // shows its plain count until the result lands.
-func loadRollupCmd(path string) tea.Cmd {
+func loadRollupCmd(path string, seq int) tea.Cmd {
 	return func() tea.Msg {
 		statuses, err := scan.Scan(path, scan.Options{Recursive: true, MaxDepth: rollupDepth})
 		if err != nil {
-			return rollupMsg{path: path, err: err}
+			return rollupMsg{path: path, seq: seq, err: err}
 		}
 		var r rollup
 		for _, s := range statuses {
-			r = r.add(s)
+			r = r.addAtDepth(s, s.Depth)
 		}
-		return rollupMsg{path: path, r: r}
+		return rollupMsg{path: path, seq: seq, r: r}
 	}
 }
 
@@ -659,9 +784,9 @@ func (m model) listHeight() int {
 	}
 	switch {
 	case m.commitInput.Focused():
-		reserved += 3
+		reserved += m.commitInput.Height() + 3
 	case m.pending != nil:
-		reserved += 2
+		reserved += lipgloss.Height(m.wrappedPendingPrompt()) + 1
 	case m.message != "":
 		reserved += 2
 		if strings.Contains(m.message, "\n") {
@@ -706,11 +831,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.Width = msg.Width
 		m.detail.Width = msg.Width
 		m.detail.Height = msg.Height - 2
+		m.resizeCommitInput()
+		if m.descriptionView != nil {
+			m.descriptionView.resize(msg.Width, msg.Height)
+		}
 		m = m.clampView()
 		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case bulkTickMsg:
+		if m.bulkProgress == nil || msg.runID != m.bulkProgress.runID {
+			return m, nil
+		}
+		m.message = m.bulkProgress.message(msg.at)
+		return m, bulkProgressTick(msg.runID)
+
+	case bulkStartedMsg:
+		if m.bulkProgress == nil || msg.runID != m.bulkProgress.runID {
+			return m, nil
+		}
+		path := msg.item.Status.Path
+		if _, done := m.bulkProgress.completedPaths[path]; !done {
+			m.bulkProgress.running[path] = filepath.Base(path)
+			m.message = m.bulkProgress.message(time.Now())
+		}
+		return m, awaitBulkStarted(msg.runID, msg.ch)
 
 	case statusMsg:
 		idx := m.findByPath(msg.path)
@@ -720,12 +867,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items[idx].status = msg.status
 		// A container's rollup can only start once its type is known.
 		if msg.status.Type == vcs.Dir && !m.items[idx].rolledUp {
-			return m, loadRollupCmd(msg.path)
+			m.items[idx].rollupSeq++
+			return m, loadRollupCmd(msg.path, m.items[idx].rollupSeq)
 		}
 		return m, nil
 
 	case rollupMsg:
-		if idx := m.findByPath(msg.path); idx >= 0 && msg.err == nil {
+		if idx := m.findByPath(msg.path); idx >= 0 && msg.seq == m.items[idx].rollupSeq && msg.err == nil {
 			// A failed subtree scan leaves the row on its shallow count and
 			// the total honestly incomplete; claiming an empty subtree that
 			// was never read would hide the failure behind a quiet row.
@@ -756,6 +904,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case actionDoneMsg:
 		m.message = msg.message
+		if !msg.failed && msg.action == "commit" {
+			delete(m.descriptionCache, msg.path)
+		}
 		idx := m.findByPath(msg.path)
 		var cmds []tea.Cmd
 		if idx >= 0 {
@@ -763,6 +914,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.items[idx].lastResult = msg.message
 			cmds = append(cmds, refreshStatusCmd(m.items[idx].path))
 		}
+		cmds = append(cmds, m.invalidateAncestorRollups(msg.path)...)
 		// Failures stay until the next keypress: their command output is
 		// exactly what the user needs to read.
 		m.messageSticky = msg.failed
@@ -771,35 +923,137 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case bulkPlanMsg:
+		if msg.scope != "" {
+			if idx := m.findByPath(msg.scope); idx >= 0 {
+				m.items[idx].busy = false
+			}
+		}
+		if msg.err != nil {
+			scanPath := m.scanDir
+			if msg.scope != "" {
+				scanPath = msg.scope
+			}
+			m.message = fmt.Sprintf("scan %s failed: %v", filepath.Base(scanPath), msg.err)
+			m.messageSticky = true
+			return m, nil
+		}
+		return m.planBulk(msg.op, msg.statuses, msg.scope)
+
+	case descriptionMsg:
+		idx := m.findByPath(msg.path)
+		if idx < 0 {
+			return m, nil
+		}
+		m.items[idx].busy = false
+		tool := actions.DescriptionToolFor(m.items[idx].status.Type)
+		if msg.err != nil {
+			m.items[idx].lastResult = fmt.Sprintf("%s failed: %v", tool, msg.err)
+			m.message = m.items[idx].lastResult
+			m.messageSticky = true
+			return m, nil
+		}
+		m.message = ""
+		m.items[idx].lastResult = fmt.Sprintf("%s proposed: %s", tool, msg.description.Description)
+		if msg.inputHash != "" {
+			if m.descriptionCache == nil {
+				m.descriptionCache = make(map[string]cachedDescription)
+			}
+			m.descriptionCache[msg.path] = cachedDescription{inputHash: msg.inputHash, description: msg.description}
+		}
+		m.descriptionView = newDescriptionDetail(msg.description, m.width, m.height)
+		m.detailCommit = &detailCommit{path: msg.path, message: msg.description.CommitMessage}
+		return m, nil
+
 	case bulkResultMsg:
 		var cmds []tea.Cmd
+		name := filepath.Base(msg.result.Item.Status.Path)
+		var resultText string
+		if msg.result.Err != nil {
+			resultText = fmt.Sprintf("%s %s failed: %v", msg.op, name, msg.result.Err)
+		} else {
+			resultText = fmt.Sprintf("%s %s done", msg.op, name)
+			if msg.op == actions.BulkFix {
+				resultText += fmt.Sprintf(": %d %s changed", msg.result.ChangedRevisions, plural(msg.result.ChangedRevisions, "revision"))
+			}
+			if output := strings.TrimSpace(msg.result.Output); output != "" {
+				resultText += "\n" + output
+			}
+		}
 		if idx := m.findByPath(msg.result.Item.Status.Path); idx >= 0 {
 			m.items[idx].busy = false
-			name := m.items[idx].name()
-			if msg.result.Err != nil {
-				m.items[idx].lastResult = fmt.Sprintf("%s %s failed: %v", msg.op, name, msg.result.Err)
-			} else {
-				m.items[idx].lastResult = fmt.Sprintf("%s %s done", msg.op, name)
-			}
+			m.items[idx].lastResult = resultText
 			cmds = append(cmds, refreshStatusCmd(m.items[idx].path))
 		}
+		// A directory-scoped fix may target children that are not expanded.
+		// Preserve each operation's review command on its visible ancestor
+		// rollup so the result remains reachable with enter.
+		if msg.op == actions.BulkFix && resultText != "" {
+			for i := range m.items {
+				if m.items[i].status == nil || m.items[i].status.Type != vcs.Dir || !pathWithin(m.items[i].path, msg.result.Item.Status.Path) {
+					continue
+				}
+				if m.items[i].lastResult != "" {
+					m.items[i].lastResult += "\n\n"
+				}
+				m.items[i].lastResult += resultText
+			}
+		}
 		succeeded, failed := msg.succeeded, msg.failed
+		changedRevisions, changedRepos := msg.changedRevisions, msg.changedRepos
+		failures := msg.failures
 		if msg.result.Err != nil {
 			failed++
+			failures = append(failures, bulkFailure{
+				path:     msg.result.Item.Status.Path,
+				repoType: msg.result.Item.Status.Type,
+				message:  msg.result.Err.Error(),
+			})
 		} else {
 			succeeded++
+			if msg.op == actions.BulkFix && msg.result.ChangedRevisions > 0 {
+				changedRevisions += msg.result.ChangedRevisions
+				changedRepos++
+			}
+			if msg.op == actions.BulkCommit {
+				delete(m.descriptionCache, msg.result.Item.Status.Path)
+			}
 		}
-		cmds = append(cmds, awaitBulkResult(msg.op, msg.ch, succeeded, failed))
+		if m.bulkProgress != nil {
+			m.bulkProgress.completed = succeeded + failed
+			m.bulkProgress.failed = failed
+			path := msg.result.Item.Status.Path
+			m.bulkProgress.completedPaths[path] = struct{}{}
+			delete(m.bulkProgress.running, path)
+			m.message = m.bulkProgress.message(time.Now())
+		}
+		cmds = append(cmds, awaitBulkResult(msg.op, msg.ch, msg.paths, msg.scope, succeeded, failed, changedRevisions, changedRepos, failures))
 		return m, tea.Batch(cmds...)
 
 	case bulkDoneMsg:
-		summary := fmt.Sprintf("%s: %d %s, %d failed", msg.op, msg.succeeded, msg.op.PastTense(), msg.failed)
-		m.message = summary
-		m.messageSticky = msg.failed > 0
-		if msg.failed == 0 {
-			return m, clearAfter(3 * time.Second)
+		m.bulkProgress = nil
+		summary := bulkSummary(msg.op, msg.succeeded, msg.failed)
+		if msg.op == actions.BulkFix {
+			summary = fixSummary(msg.changedRevisions, msg.changedRepos, msg.failed)
 		}
-		return m, nil
+		report := bulkFailureReport(summary, msg.failures)
+		m.message = report
+		m.messageSticky = msg.failed > 0
+		if msg.scope != "" {
+			if idx := m.findByPath(msg.scope); idx >= 0 {
+				m.items[idx].busy = false
+				m.items[idx].lastResult = report
+			}
+		}
+		cmds := m.invalidateAncestorRollups(msg.paths...)
+		if len(msg.failures) > 0 {
+			updated, _ := m.openDetailContent(report, nil)
+			m = updated.(model)
+		}
+		if msg.failed == 0 {
+			cmds = append(cmds, clearAfter(3*time.Second))
+		}
+		return m, tea.Batch(cmds...)
 
 	case draftMsg:
 		if msg.path != m.draftPath || msg.seq != m.draftSeq {
@@ -809,11 +1063,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil || strings.TrimSpace(msg.message) == "" {
 			return m, nil // keep the canned default; the prompt still works
 		}
+		if msg.inputHash != "" && msg.description.CommitMessage != "" {
+			if m.descriptionCache == nil {
+				m.descriptionCache = make(map[string]cachedDescription)
+			}
+			m.descriptionCache[msg.path] = cachedDescription{
+				inputHash:   msg.inputHash,
+				description: msg.description,
+			}
+		}
 		// Only seed an untouched prompt: replacing text the user has begun
 		// editing would be worse than offering no draft at all.
 		if m.commitInput.Focused() && m.commitInput.Value() == actions.DefaultCommitMessage {
 			m.commitInput.SetValue(msg.message)
 			m.commitInput.CursorEnd()
+			m.resizeCommitInput()
 		}
 		return m, nil
 
@@ -840,22 +1104,56 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.pending != nil {
 		return m.handleConfirmKey(msg)
 	}
+	if m.descriptionView != nil {
+		switch msg.String() {
+		case "esc", "q":
+			m.descriptionView = nil
+			m.detailCommit = nil
+			return m, nil
+		case "left", "h", "shift+tab":
+			m.descriptionView.nextPage(-1)
+			return m, nil
+		case "right", "l", "tab":
+			m.descriptionView.nextPage(1)
+			return m, nil
+		case "c":
+			if m.detailCommit != nil {
+				commit := *m.detailCommit
+				m.descriptionView = nil
+				m.detailCommit = nil
+				return m.runActionAt("commit", commit.path, func(path string) error {
+					return actions.ActionCommit(path, commit.message)
+				})
+			}
+		}
+		return m, m.descriptionView.update(msg)
+	}
 	if m.showDetail {
 		switch msg.String() {
 		case "esc", "q", "enter":
 			m.showDetail = false
+			m.detailCommit = nil
 			return m, nil
+		case "c":
+			if m.detailCommit != nil {
+				commit := *m.detailCommit
+				m.showDetail = false
+				m.detailCommit = nil
+				return m.runActionAt("commit", commit.path, func(path string) error {
+					return actions.ActionCommit(path, commit.message)
+				})
+			}
 		}
 		var cmd tea.Cmd
 		m.detail, cmd = m.detail.Update(msg)
 		return m, cmd
 	}
 
-	// Esc dismisses the expanded help, matching the detail view and the
-	// prompts. It is only a dismissal, so it does nothing when the help is
-	// already collapsed.
-	if msg.String() == "esc" && m.help.ShowAll {
-		m.help.ShowAll = false
+	// Help is a modal overlay: only its close keys act while it is visible.
+	if m.help.ShowAll {
+		if msg.String() == "esc" || key.Matches(msg, m.keys.Help) {
+			m.help.ShowAll = false
+		}
 		return m, nil
 	}
 
@@ -889,16 +1187,22 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.showDetailView()
 
 	case key.Matches(msg, m.keys.Push):
-		return m.runAction("push", actions.ActionPush)
+		return m.runRepositoryAction(actions.BulkPush, "push", actions.ActionPush)
 
 	case key.Matches(msg, m.keys.Pull):
-		return m.runAction("pull", actions.ActionPull)
+		return m.runRepositoryAction(actions.BulkPull, "pull", actions.ActionPull)
+
+	case key.Matches(msg, m.keys.Fix):
+		return m.startFix()
+
+	case key.Matches(msg, m.keys.Describe):
+		return m.startDescription()
 
 	case key.Matches(msg, m.keys.Commit):
 		return m.startCommit()
 
 	case key.Matches(msg, m.keys.Sync):
-		return m.runAction("sync", actions.ActionSync)
+		return m.runRepositoryAction(actions.BulkSync, "sync", actions.ActionSync)
 
 	case key.Matches(msg, m.keys.PushAll):
 		return m.startBulk(actions.BulkPush)
@@ -1018,6 +1322,7 @@ func (m model) handleCommitInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.commitInput, cmd = m.commitInput.Update(msg)
+	m.resizeCommitInput()
 	return m, cmd
 }
 
@@ -1029,27 +1334,98 @@ func (m model) startCommit() (tea.Model, tea.Cmd) {
 	if item.busy {
 		return m.busyMessage(item)
 	}
-	// Only a repository can be committed. Beyond the inevitable failure,
-	// drafting would invoke the AI commit tool in a directory that is not a
-	// repository at all.
 	if vcs.DetectRepoType(item.path) == vcs.Dir {
-		m.message = fmt.Sprintf("%s: not a repository", item.name())
-		return m, clearAfter(2 * time.Second)
+		return m.startScopedBulk(actions.BulkCommit, item.path)
 	}
 	m.commitInput.SetValue(actions.DefaultCommitMessage)
 	m.commitInput.CursorEnd()
+	m.resizeCommitInput()
 	cmds := []tea.Cmd{m.commitInput.Focus()}
 	// Drafting reaches an LLM and takes seconds, so the prompt opens
 	// immediately on the canned message and the draft replaces it when it
 	// lands. Typing is never blocked, and never interrupted -- the draft is
 	// dropped if the user has already started editing.
-	if shouldDraftCommitMessage(item.status) && actions.CommitToolAvailable(item.path) {
+	cached, hasCached := m.descriptionCache[item.path]
+	if shouldDraftCommitMessage(item.status) && (hasCached || actions.CommitToolAvailable(item.path)) {
 		m.drafting = true
 		m.draftPath = item.path
 		m.draftSeq++
-		cmds = append(cmds, draftCommitCmd(item.path, m.draftSeq))
+		cmds = append(cmds, draftCommitCmd(item.path, m.draftSeq, cached, hasCached))
 	}
 	return m, tea.Batch(cmds...)
+}
+
+func (m model) startFix() (tea.Model, tea.Cmd) {
+	item, ok := m.current()
+	if !ok {
+		return m, nil
+	}
+	if item.busy {
+		return m.busyMessage(item)
+	}
+	if item.status == nil {
+		m.message = fmt.Sprintf("%s: status is still loading", item.name())
+		return m, clearAfter(2 * time.Second)
+	}
+	if item.status.Type == vcs.Dir {
+		return m.startScopedBulk(actions.BulkFix, item.path)
+	}
+	if item.status.Type != vcs.Jujutsu {
+		m.message = fmt.Sprintf("%s: jj fix requires a Jujutsu repository", item.name())
+		return m, clearAfter(3 * time.Second)
+	}
+	return m.runFixAt(item.path)
+}
+
+func (m model) startDescription() (tea.Model, tea.Cmd) {
+	item, ok := m.current()
+	if !ok {
+		return m, nil
+	}
+	if item.busy {
+		return m.busyMessage(item)
+	}
+	if item.status == nil {
+		m.message = fmt.Sprintf("%s: status is still loading", item.name())
+		return m, clearAfter(2 * time.Second)
+	}
+	if item.status.Type == vcs.Dir {
+		m.message = fmt.Sprintf("%s: not a repository", item.name())
+		return m, clearAfter(2 * time.Second)
+	}
+	if item.status.Error != "" || item.status.Corrupted {
+		m.message = fmt.Sprintf("%s: repository status is unavailable", item.name())
+		return m, clearAfter(2 * time.Second)
+	}
+	if !item.status.Dirty {
+		m.message = fmt.Sprintf("%s: no dirty changes to describe", item.name())
+		return m, clearAfter(2 * time.Second)
+	}
+	tool := actions.DescriptionToolFor(item.status.Type)
+	if !actions.DescriptionToolAvailable(item.path) {
+		m.message = fmt.Sprintf("%s is not installed", tool)
+		return m, clearAfter(3 * time.Second)
+	}
+	m.items[m.cursor].busy = true
+	m.message = fmt.Sprintf("describing changes in %s…", item.name())
+	cached, hasCached := m.descriptionCache[item.path]
+	return m, describeChangesCmd(item.path, cached, hasCached)
+}
+
+func describeChangesCmd(path string, cached cachedDescription, hasCached bool) tea.Cmd {
+	return func() tea.Msg {
+		inputHash, hashErr := actions.DescriptionInputHash(path)
+		if hashErr == nil && hasCached && cached.inputHash == inputHash {
+			return descriptionMsg{path: path, description: cached.description, inputHash: inputHash}
+		}
+		description, err := actions.DescribeChanges(path)
+		return descriptionMsg{
+			path:        path,
+			description: description,
+			inputHash:   inputHash,
+			err:         err,
+		}
+	}
 }
 
 // shouldDraftCommitMessage reports whether a row deserves an AI draft: the
@@ -1061,11 +1437,51 @@ func shouldDraftCommitMessage(status *vcs.RepoStatus) bool {
 
 // draftCommitCmd asks the AI commit tool for a proposed message. seq ties
 // the result to the prompt that requested it.
-func draftCommitCmd(path string, seq int) tea.Cmd {
+func draftCommitCmd(path string, seq int, cached cachedDescription, hasCached bool) tea.Cmd {
 	return func() tea.Msg {
-		message, err := actions.DraftCommitMessage(path)
-		return draftMsg{path: path, seq: seq, message: message, err: err}
+		inputHash, _ := actions.DescriptionInputHash(path)
+		if inputHash != "" && hasCached && cached.inputHash == inputHash {
+			return draftMsg{
+				path:        path,
+				seq:         seq,
+				message:     cached.description.CommitMessage,
+				description: cached.description,
+				inputHash:   inputHash,
+			}
+		}
+		description, err := actions.DescribeChanges(path)
+		return draftMsg{
+			path:        path,
+			seq:         seq,
+			message:     description.CommitMessage,
+			description: description,
+			inputHash:   inputHash,
+			err:         err,
+		}
 	}
+}
+
+// resizeCommitInput expands the editor to show the complete message when it
+// fits while preserving at least one repository row and the surrounding TUI
+// chrome. Longer drafts remain scrollable inside the editor.
+func (m *model) resizeCommitInput() {
+	width := m.width
+	if width < 1 {
+		width = 80
+	}
+	m.commitInput.SetWidth(width)
+	height := contentLineCount(wrapContent(m.commitInput.Value(), width))
+	if height < 1 {
+		height = 1
+	}
+	maxHeight := m.height - 12
+	if maxHeight < 1 {
+		maxHeight = 1
+	}
+	if height > maxHeight {
+		height = maxHeight
+	}
+	m.commitInput.SetHeight(height)
 }
 
 func (m model) busyMessage(item tuiItem) (tea.Model, tea.Cmd) {
@@ -1089,13 +1505,18 @@ func (m model) showDetailView() (tea.Model, tea.Cmd) {
 	} else {
 		b.WriteString("\nno actions run yet\n")
 	}
+	return m.openDetailContent(b.String(), nil)
+}
+
+func (m model) openDetailContent(content string, commit *detailCommit) (tea.Model, tea.Cmd) {
 	height := m.height - 2
 	if height < 1 {
 		height = 1
 	}
 	m.detail = viewport.New(m.width, height)
-	m.detail.SetContent(b.String())
+	m.detail.SetContent(content)
 	m.showDetail = true
+	m.detailCommit = commit
 	return m, nil
 }
 
@@ -1108,7 +1529,7 @@ func (m model) confirmRepair() (tea.Model, tea.Cmd) {
 		return m.busyMessage(item)
 	}
 	m.pending = &pendingAction{
-		prompt: fmt.Sprintf("repair %s? this moves .git aside (y/n)", item.name()),
+		prompt: fmt.Sprintf("Repair %s? This moves .git aside. (y/n)", item.name()),
 		run:    func(m model) (model, tea.Cmd) { return m.runRepair() },
 	}
 	return m, nil
@@ -1128,7 +1549,7 @@ func (m model) confirmAddRemote() (tea.Model, tea.Cmd) {
 		return mm, cmd
 	}
 	m.pending = &pendingAction{
-		prompt: fmt.Sprintf("replace origin of %s with the GitHub remote? (y/n)", item.name()),
+		prompt: fmt.Sprintf("Replace origin of %s with the GitHub remote? (y/n)", item.name()),
 		run: func(m model) (model, tea.Cmd) {
 			mm, cmd := m.runAction("add GitHub remote", actions.ActionAddGitHubRemote)
 			return mm.(model), cmd
@@ -1142,33 +1563,149 @@ func (m model) runAction(name string, fn func(string) error) (tea.Model, tea.Cmd
 	if !ok {
 		return m, nil
 	}
+	return m.runActionAt(name, item.path, fn)
+}
+
+func (m model) runRepositoryAction(op actions.BulkOp, name string, fn func(string) error) (tea.Model, tea.Cmd) {
+	item, ok := m.current()
+	if !ok {
+		return m, nil
+	}
 	if item.busy {
 		return m.busyMessage(item)
 	}
-	m.items[m.cursor].busy = true
+	if item.status == nil {
+		m.message = fmt.Sprintf("%s: status is still loading", item.name())
+		return m, clearAfter(2 * time.Second)
+	}
+	if item.status.Type == vcs.Dir {
+		return m.startScopedBulk(op, item.path)
+	}
+	return m.runActionAt(name, item.path, fn)
+}
+
+func (m model) runActionAt(name, path string, fn func(string) error) (tea.Model, tea.Cmd) {
+	return m.runOutputActionAt(name, path, func(path string) (string, error) {
+		return "", fn(path)
+	})
+}
+
+func (m model) runOutputActionAt(name, path string, fn func(string) (string, error)) (tea.Model, tea.Cmd) {
+	idx := m.findByPath(path)
+	if idx < 0 {
+		m.message = fmt.Sprintf("%s: repository is no longer visible", filepath.Base(path))
+		return m, clearAfter(2 * time.Second)
+	}
+	item := m.items[idx]
+	if item.busy {
+		return m.busyMessage(item)
+	}
+	m.items[idx].busy = true
 	m.message = fmt.Sprintf("%s: %s…", name, item.name())
 	return m, func() tea.Msg {
-		if err := fn(item.path); err != nil {
+		output, err := fn(item.path)
+		if err != nil {
 			return actionDoneMsg{
 				path:    item.path,
+				action:  name,
 				message: fmt.Sprintf("%s %s failed: %v", name, item.name(), err),
 				failed:  true,
 			}
 		}
-		return actionDoneMsg{path: item.path, message: fmt.Sprintf("%s %s done", name, item.name())}
+		message := fmt.Sprintf("%s %s done", name, item.name())
+		if output = strings.TrimSpace(output); output != "" {
+			message += "\n" + output
+		}
+		return actionDoneMsg{path: item.path, action: name, message: message}
 	}
 }
 
-// startBulk plans a bulk operation over every eligible repository currently
-// in scope and asks for confirmation, showing the count and the first few
-// names. An empty plan just reports that there is nothing to do.
-func (m model) startBulk(op actions.BulkOp) (tea.Model, tea.Cmd) {
-	var statuses []*vcs.RepoStatus
-	for _, item := range m.items {
-		if item.status != nil {
-			statuses = append(statuses, item.status)
+func (m model) runFixAt(path string) (tea.Model, tea.Cmd) {
+	idx := m.findByPath(path)
+	if idx < 0 {
+		return m, nil
+	}
+	item := m.items[idx]
+	m.items[idx].busy = true
+	m.message = fmt.Sprintf("fix: %s…", item.name())
+	return m, func() tea.Msg {
+		result, err := actions.ActionFix(item.path)
+		if err != nil {
+			return actionDoneMsg{
+				path:    item.path,
+				action:  "fix",
+				message: fmt.Sprintf("fix %s failed: %v", item.name(), err),
+				failed:  true,
+			}
+		}
+		message := fmt.Sprintf("fix %s done: %d %s changed", item.name(), result.ChangedRevisions, plural(result.ChangedRevisions, "revision"))
+		if output := strings.TrimSpace(result.Output); output != "" {
+			message += "\n" + output
+		}
+		return actionDoneMsg{path: item.path, action: "fix", message: message}
+	}
+}
+
+// invalidateAncestorRollups marks every visible container that owns one of
+// paths as pending and schedules a fresh aggregate. The sequence prevents a
+// slower pre-action scan from overwriting the post-action result.
+func (m *model) invalidateAncestorRollups(paths ...string) []tea.Cmd {
+	var cmds []tea.Cmd
+	for i := range m.items {
+		item := &m.items[i]
+		if item.status == nil || item.status.Type != vcs.Dir {
+			continue
+		}
+		for _, path := range paths {
+			if !pathWithin(item.path, path) {
+				continue
+			}
+			item.rolledUp = false
+			item.rollupSeq++
+			cmds = append(cmds, loadRollupCmd(item.path, item.rollupSeq))
+			break
 		}
 	}
+	return cmds
+}
+
+func pathWithin(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil || rel == "." || rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// startBulk scans the whole recursive scope in the background before planning.
+// Uppercase actions mean all repositories represented by the display, not only
+// repository rows that happen to be expanded at the moment.
+func (m model) startBulk(op actions.BulkOp) (tea.Model, tea.Cmd) {
+	m.message = fmt.Sprintf("planning %s for all repositories…", op)
+	return m, func() tea.Msg {
+		statuses, err := scan.Scan(m.scanDir, scan.Options{Recursive: true, MaxDepth: rollupDepth})
+		return bulkPlanMsg{op: op, statuses: statuses, err: err}
+	}
+}
+
+// startScopedBulk applies a lowercase action to the selected row's rollup:
+// recursively scan that directory, then use the normal eligibility and
+// confirmation flow only for the repositories it represents.
+func (m model) startScopedBulk(op actions.BulkOp, scope string) (tea.Model, tea.Cmd) {
+	idx := m.findByPath(scope)
+	if idx < 0 {
+		return m, nil
+	}
+	m.items[idx].busy = true
+	m.items[idx].lastResult = ""
+	m.message = fmt.Sprintf("planning %s in %s…", op, filepath.Base(scope))
+	return m, func() tea.Msg {
+		statuses, err := scan.Scan(scope, scan.Options{Recursive: true, MaxDepth: rollupDepth})
+		return bulkPlanMsg{op: op, scope: scope, statuses: statuses, err: err}
+	}
+}
+
+func (m model) planBulk(op actions.BulkOp, statuses []*vcs.RepoStatus, scope string) (tea.Model, tea.Cmd) {
 	items := actions.Plan(op, statuses)
 	if len(items) == 0 {
 		m.message = actions.EmptyMessage(op)
@@ -1194,39 +1731,215 @@ func (m model) startBulk(op actions.BulkOp) (tea.Model, tea.Cmd) {
 	if len(items) == 1 {
 		noun = "repository"
 	}
+	scopeText := ""
+	if scope != "" {
+		scopeText = " in " + filepath.Base(scope)
+	}
 	m.pending = &pendingAction{
-		prompt: fmt.Sprintf("%s %d %s (%s)? (y/n)", op, len(items), noun, strings.Join(names, ", ")),
-		run:    func(m model) (model, tea.Cmd) { return m.runBulk(op, items) },
+		prompt: fmt.Sprintf("%s %d %s%s (%s)? (y/n)", bulkPromptVerb(op), len(items), noun, scopeText, strings.Join(names, ", ")),
+		run:    func(m model) (model, tea.Cmd) { return m.runBulk(op, items, scope) },
 	}
 	return m, nil
+}
+
+func bulkPromptVerb(op actions.BulkOp) string {
+	switch op {
+	case actions.BulkCommit:
+		return "Commit"
+	case actions.BulkPull:
+		return "Pull"
+	case actions.BulkFix:
+		return "Fix"
+	case actions.BulkPush:
+		return "Push"
+	case actions.BulkSync:
+		return "Sync"
+	default:
+		return "Run"
+	}
 }
 
 // runBulk marks every planned repository busy and starts the batch. The
 // engine runs in a goroutine feeding a channel; awaitBulkResult turns each
 // result into a message so rows refresh as they finish.
-func (m model) runBulk(op actions.BulkOp, items []actions.PlanItem) (model, tea.Cmd) {
+func (m model) runBulk(op actions.BulkOp, items []actions.PlanItem, scope string) (model, tea.Cmd) {
+	paths := make([]string, 0, len(items))
+	if scope != "" {
+		if idx := m.findByPath(scope); idx >= 0 {
+			m.items[idx].busy = true
+		}
+	}
 	for _, item := range items {
+		paths = append(paths, item.Status.Path)
 		if idx := m.findByPath(item.Status.Path); idx >= 0 {
 			m.items[idx].busy = true
 		}
 	}
 	ch := make(chan actions.Result, len(items))
+	startedCh := make(chan actions.PlanItem, len(items))
 	go func() {
-		actions.ExecuteBulk(op, items, false, func(r actions.Result) { ch <- r })
+		actions.ExecuteBulkWithProgress(op, items, false, func(item actions.PlanItem) { startedCh <- item }, func(r actions.Result) { ch <- r })
+		close(startedCh)
 		close(ch)
 	}()
-	m.message = fmt.Sprintf("%s %d repositories…", op, len(items))
-	return m, awaitBulkResult(op, ch, 0, 0)
+	m.bulkRunID++
+	m.bulkProgress = &bulkProgressState{
+		runID:          m.bulkRunID,
+		op:             op,
+		total:          len(items),
+		started:        time.Now(),
+		running:        make(map[string]string),
+		completedPaths: make(map[string]struct{}),
+	}
+	m.message = m.bulkProgress.message(m.bulkProgress.started)
+	return m, tea.Batch(
+		awaitBulkResult(op, ch, paths, scope, 0, 0, 0, 0, nil),
+		awaitBulkStarted(m.bulkProgress.runID, startedCh),
+		bulkProgressTick(m.bulkProgress.runID),
+	)
 }
 
-func awaitBulkResult(op actions.BulkOp, ch <-chan actions.Result, succeeded, failed int) tea.Cmd {
+func awaitBulkResult(op actions.BulkOp, ch <-chan actions.Result, paths []string, scope string, succeeded, failed, changedRevisions, changedRepos int, failures []bulkFailure) tea.Cmd {
 	return func() tea.Msg {
 		r, ok := <-ch
 		if !ok {
-			return bulkDoneMsg{op: op, succeeded: succeeded, failed: failed}
+			return bulkDoneMsg{op: op, paths: paths, scope: scope, succeeded: succeeded, failed: failed, changedRevisions: changedRevisions, changedRepos: changedRepos, failures: failures}
 		}
-		return bulkResultMsg{op: op, result: r, ch: ch, succeeded: succeeded, failed: failed}
+		return bulkResultMsg{op: op, result: r, ch: ch, paths: paths, scope: scope, succeeded: succeeded, failed: failed, changedRevisions: changedRevisions, changedRepos: changedRepos, failures: failures}
 	}
+}
+
+func bulkFailureReport(summary string, failures []bulkFailure) string {
+	if len(failures) == 0 {
+		return summary
+	}
+	var b strings.Builder
+	b.WriteString(summary)
+	b.WriteString("\n\nFailures")
+	for i, failure := range failures {
+		fmt.Fprintf(&b, "\n\nFailure %d of %d\n", i+1, len(failures))
+		fmt.Fprintf(&b, "Repository: %s\n", filepath.Base(failure.path))
+		fmt.Fprintf(&b, "Location: %s\n", displayPath(failure.path))
+		fmt.Fprintf(&b, "Version control: %s\n", repoTypeName(failure.repoType))
+		b.WriteString("\nError:\n")
+		b.WriteString(strings.TrimSpace(failure.message))
+	}
+	return b.String()
+}
+
+func bulkSummary(op actions.BulkOp, succeeded, failed int) string {
+	succeededNoun := "repositories"
+	if succeeded == 1 {
+		succeededNoun = "repository"
+	}
+	if failed == 0 {
+		return fmt.Sprintf("%s: %d %s succeeded", bulkPromptVerb(op), succeeded, succeededNoun)
+	}
+	return fmt.Sprintf("%s: %d %s succeeded; %d failed", bulkPromptVerb(op), succeeded, succeededNoun, failed)
+}
+
+func repoTypeName(repoType vcs.RepoType) string {
+	switch repoType {
+	case vcs.Git:
+		return "Git"
+	case vcs.Jujutsu:
+		return "Jujutsu"
+	default:
+		return repoType.String()
+	}
+}
+
+func displayPath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	rel, err := filepath.Rel(home, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path
+	}
+	if rel == "." {
+		return "~"
+	}
+	return "~" + string(filepath.Separator) + rel
+}
+
+func (p bulkProgressState) message(now time.Time) string {
+	noun := "repositories"
+	if p.total == 1 {
+		noun = "repository"
+	}
+	elapsed := now.Sub(p.started).Truncate(time.Second)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	message := fmt.Sprintf("%s %d %s… %d/%d complete", bulkActiveVerb(p.op), p.total, noun, p.completed, p.total)
+	if p.failed > 0 {
+		message += fmt.Sprintf(", %d failed", p.failed)
+	}
+	running := make([]string, 0, len(p.running))
+	for _, name := range p.running {
+		running = append(running, name)
+	}
+	sort.Strings(running)
+	if len(running) > 0 {
+		const shown = 2
+		names := running
+		if len(names) > shown {
+			names = names[:shown]
+		}
+		message += fmt.Sprintf(" · %d running: %s", len(running), strings.Join(names, ", "))
+		if len(running) > shown {
+			message += fmt.Sprintf(" +%d", len(running)-shown)
+		}
+	}
+	queued := p.total - p.completed - len(p.running)
+	if queued > 0 {
+		message += fmt.Sprintf(" · %d queued", queued)
+	}
+	return fmt.Sprintf("%s · %s", message, elapsed)
+}
+
+func bulkActiveVerb(op actions.BulkOp) string {
+	switch op {
+	case actions.BulkCommit:
+		return "Committing"
+	case actions.BulkPull:
+		return "Pulling"
+	case actions.BulkFix:
+		return "Fixing"
+	case actions.BulkPush:
+		return "Pushing"
+	case actions.BulkSync:
+		return "Syncing"
+	default:
+		return "Running"
+	}
+}
+
+func bulkProgressTick(runID int) tea.Cmd {
+	return tea.Tick(time.Second, func(at time.Time) tea.Msg {
+		return bulkTickMsg{runID: runID, at: at}
+	})
+}
+
+func awaitBulkStarted(runID int, ch <-chan actions.PlanItem) tea.Cmd {
+	return func() tea.Msg {
+		item, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return bulkStartedMsg{runID: runID, item: item, ch: ch}
+	}
+}
+
+func fixSummary(revisions, repos, failed int) string {
+	repositoryNoun := "repositories"
+	if repos == 1 {
+		repositoryNoun = "repository"
+	}
+	return fmt.Sprintf("Fix: %d %s changed across %d %s; %d failed",
+		revisions, plural(revisions, "revision"), repos, repositoryNoun, failed)
 }
 
 func (m model) runRepair() (model, tea.Cmd) {
@@ -1320,8 +2033,18 @@ func (m model) View() string {
 	if m.width == 0 {
 		return "Loading…"
 	}
+	if m.descriptionView != nil {
+		return m.descriptionView.view()
+	}
 	if m.showDetail {
-		return m.detail.View() + "\n(esc to return)"
+		hint := "(esc to return)"
+		if m.detailCommit != nil {
+			hint = "(esc to return, c to commit and return)"
+		}
+		return m.detail.View() + "\n" + hint
+	}
+	if m.help.ShowAll {
+		return m.helpOverlay()
 	}
 
 	var b strings.Builder
@@ -1398,6 +2121,8 @@ func (m model) View() string {
 	b.WriteString("\n")
 	switch {
 	case m.commitInput.Focused():
+		b.WriteString(titleStyle.Render("Commit message"))
+		b.WriteString("\n")
 		b.WriteString(m.commitInput.View())
 		b.WriteString("\n")
 		hint := "enter to commit, esc to cancel"
@@ -1407,10 +2132,10 @@ func (m model) View() string {
 		b.WriteString(dimStyle.Render(hint))
 		b.WriteString("\n\n")
 	case m.pending != nil:
-		b.WriteString(msgStyle.Render(m.pending.prompt))
+		b.WriteString(msgStyle.Render(m.wrappedPendingPrompt()))
 		b.WriteString("\n\n")
 	case m.message != "":
-		b.WriteString(msgStyle.Render(report.FirstLine(m.message)))
+		b.WriteString(msgStyle.Render(ansi.Truncate(report.FirstLine(m.message), m.width, "…")))
 		b.WriteString("\n")
 		if strings.Contains(m.message, "\n") {
 			b.WriteString(dimStyle.Render("enter for full output"))
@@ -1418,6 +2143,47 @@ func (m model) View() string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(m.help.View(m.keys))
-	return b.String()
+	return anchorFooter(b.String(), m.help.View(m.keys), m.height)
+}
+
+func (m model) wrappedPendingPrompt() string {
+	if m.pending == nil {
+		return ""
+	}
+	return ansi.Wrap(m.pending.prompt, max(1, m.width), ",")
+}
+
+// anchorFooter fills otherwise-unused terminal rows above the short-help line.
+// Directory expansion therefore changes the table, not the footer's screen
+// position. The list-height calculation already reserves a blank line between
+// content and the footer, including when the terminal is full.
+func anchorFooter(content, footer string, height int) string {
+	content = strings.TrimRight(content, "\n")
+	footer = strings.TrimRight(footer, "\n")
+	gap := height - lipgloss.Height(content) - lipgloss.Height(footer) + 1
+	if gap < 2 {
+		gap = 2
+	}
+	return content + strings.Repeat("\n", gap) + footer
+}
+
+func (m model) helpOverlay() string {
+	modalWidth := m.width - 4
+	if modalWidth < 1 {
+		modalWidth = 1
+	}
+	if modalWidth > 78 {
+		modalWidth = 78
+	}
+	h := m.help
+	h.Width = max(1, modalWidth-6)
+	title := lipgloss.NewStyle().Bold(true).Render("Keyboard Shortcuts")
+	hint := lipgloss.NewStyle().Faint(true).Render("Press ? or esc to close")
+	body := title + "\n\n" + h.View(m.keys) + "\n\n" + hint
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.AdaptiveColor{Light: "#5B5BD6", Dark: "#8C8CFF"}).
+		Padding(1, 2).
+		Render(body)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }

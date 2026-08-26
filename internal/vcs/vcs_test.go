@@ -472,26 +472,64 @@ func TestGetJujutsuStatus(t *testing.T) {
 	if err := getJujutsuStatus(status); err != nil {
 		t.Fatal(err)
 	}
-	// Debug: check what jj thinks is ahead
-	debugCmd := exec.Command("jj", "log", "-r", "all() & ~ remote_bookmarks() & ~ root() & ~ empty()", "--no-graph", "-T", "commit_id")
-	debugCmd.Dir = tmpDir
-	debugOutput, _ := debugCmd.CombinedOutput()
 	if status.Ahead.Known && status.Ahead.N != 0 {
-		t.Errorf("expected repo with no ahead commits to have ahead count 0. Debug output: %q", string(debugOutput))
+		t.Errorf("expected repo with no ahead commits to have ahead count 0, got %+v", status.Ahead)
 	}
 
-	// add another commit
+	// A dirty working-copy revision is not pushable and therefore is not an
+	// ahead commit yet.
+	_ = os.WriteFile(filepath.Join(tmpDir, "file3"), []byte(""), 0o644)
+	if err := getJujutsuStatus(status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ahead.Known || status.Ahead.N != 0 {
+		t.Errorf("expected dirty working copy not to count as ahead, got %+v", status.Ahead)
+	}
+	cmd = exec.Command("jj", "commit", "-m", "ahead commit")
+	cmd.Dir = tmpDir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit ahead revision: %v\n%s", err, output)
+	}
+	if err := getJujutsuStatus(status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ahead.Known || status.Ahead.N != 1 {
+		t.Errorf("expected committed working-copy parent to count as ahead, got %+v", status.Ahead)
+	}
+	if err := (jjBackend{}).Push(tmpDir); err != nil {
+		t.Fatalf("tug and push ahead revision: %v", err)
+	}
+	if err := getJujutsuStatus(status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ahead.Known || status.Ahead.N != 0 {
+		bookmarkCmd := exec.Command("jj", "bookmark", "list", "--all-remotes")
+		bookmarkCmd.Dir = tmpDir
+		bookmarks, _ := bookmarkCmd.CombinedOutput()
+		aheadCmd := exec.Command("jj", "log", "-r", "((::bookmarks() | ::@-) ~ ::remote_bookmarks()) & ~ root() & ~ empty()", "--no-graph", "-T", `commit_id.short() ++ " " ++ bookmarks ++ " " ++ description.first_line() ++ "\n"`)
+		aheadCmd.Dir = tmpDir
+		ahead, _ := aheadCmd.CombinedOutput()
+		remoteCmd := exec.Command("git", "--git-dir", remoteDir, "log", "--all", "--pretty=%h %s")
+		remote, _ := remoteCmd.CombinedOutput()
+		t.Errorf("expected tug and push to clear ahead count, got %+v\nbookmarks:\n%s\nahead:\n%s\nremote:\n%s", status.Ahead, bookmarks, ahead, remote)
+	}
+
+	// Jujutsu can refuse a bookmark yet exit successfully. An undescribed
+	// intermediate revision makes the next bookmark unpushable; the backend's
+	// postcondition check must turn that into a reported failure.
 	cmd = exec.Command("jj", "new")
 	cmd.Dir = tmpDir
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
-	_ = os.WriteFile(filepath.Join(tmpDir, "file3"), []byte(""), 0o644)
-	if err := getJujutsuStatus(status); err != nil {
-		t.Fatal(err)
+	_ = os.WriteFile(filepath.Join(tmpDir, "file4"), []byte("content"), 0o644)
+	cmd = exec.Command("jj", "commit", "-m", "blocked commit")
+	cmd.Dir = tmpDir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit blocked revision: %v\n%s", err, output)
 	}
-	if !status.Ahead.Known || status.Ahead.N != 1 {
-		t.Errorf("expected repo with one ahead commit to have ahead count 1, got %+v", status.Ahead)
+	if err := (jjBackend{}).Push(tmpDir); err == nil {
+		t.Fatal("expected a successful-exit Jujutsu push refusal to be reported as failure")
 	}
 }
 
